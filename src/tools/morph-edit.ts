@@ -1,0 +1,225 @@
+import type { Static } from "@oh-my-pi/pi-ai/types";
+import type {
+  AgentToolResult,
+  AgentToolUpdateCallback,
+  ExtensionAPI,
+  ExtensionContext,
+  ToolDefinition,
+} from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
+import { throwIfAborted } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
+import { MORPH_API_KEY, MORPH_API_URL } from "../config.js";
+import { textToolResult } from "../compaction.js";
+import {
+  detectCatastrophicTruncation,
+  detectMarkerLeakage,
+  EXISTING_CODE_MARKER,
+  normalizeCodeEditInput,
+  resolveFilepath,
+} from "../format.js";
+import { morph } from "../morph-clients.js";
+import { withToolNote } from "../routing.js";
+
+const DESCRIPTION = `Edit existing files using partial code snippets with "// ... existing code ..." markers. Morph's AI merges your changes into the full file.
+
+WHEN TO USE morph_edit vs edit:
+- morph_edit: large files (300+ lines), multiple scattered changes, complex refactoring, whitespace-sensitive edits
+- native edit: small exact string replacements, simple renames, single-line fixes (faster, no API call)
+- native write: creating new files from scratch
+
+FORMAT — use "// ... existing code ..." to represent unchanged sections:
+// ... existing code ...
+FIRST_EDIT
+// ... existing code ...
+SECOND_EDIT
+// ... existing code ...
+
+CRITICAL RULES:
+- ALWAYS wrap changes with markers at start AND end (omitting markers DELETES surrounding code)
+- Include 1-2 unique context lines around each edit to anchor the location precisely
+- Write a specific 'instructions' param: "I am adding X to function Y" not "update code"
+- Preserve exact indentation
+- For deletions: show surrounding context, omit the deleted lines
+- Batch multiple edits to the same file in one call
+
+DISAMBIGUATION — when a file has repeated patterns, include enough unique context:
+  BAD:  just "return result;" (matches many places)
+  GOOD: include the unique function signature above it
+
+FALLBACK: If morph_edit fails (API error, timeout), use the native 'edit' tool with exact oldString/newString matching.`;
+
+export function makeMorphEdit(pi: ExtensionAPI) {
+  const { z } = pi.zod;
+  const parameters = z.object({
+    target_filepath: z.string().describe("Path of the file to modify"),
+    instructions: z.string().describe(
+      "Brief first-person description of what you're changing. Used to disambiguate uncertainty in the edit.",
+    ),
+    code_edit: z.string().describe(
+      'The code changes wrapped with "// ... existing code ..." markers for unchanged sections',
+    ),
+  });
+
+  return {
+    name: "morph_edit",
+    label: "Morph Edit",
+    description: withToolNote(DESCRIPTION, "morph_edit"),
+    parameters,
+    approval: "write",
+    async execute(
+      _toolCallId: string,
+      params: Static<typeof parameters>,
+      signal: AbortSignal | undefined,
+      _onUpdate: AgentToolUpdateCallback | undefined,
+      ctx: ExtensionContext,
+    ): Promise<AgentToolResult> {
+      try {
+        const { target_filepath, instructions, code_edit } = params;
+        const normalizedCodeEdit = normalizeCodeEditInput(code_edit);
+        const filepath = resolveFilepath(target_filepath, ctx.cwd);
+
+        if (!MORPH_API_KEY || !morph) {
+          return textToolResult(`Error: MORPH_API_KEY not configured.
+
+To use morph_edit, set the MORPH_API_KEY environment variable.
+Get your API key at: https://morphllm.com/dashboard/api-keys
+
+Alternatively, use the native 'edit' tool for this change.`);
+        }
+
+        let originalCode: string;
+        try {
+          const file = Bun.file(filepath);
+          if (!(await file.exists())) {
+            if (!normalizedCodeEdit.includes(EXISTING_CODE_MARKER)) {
+              await Bun.write(filepath, normalizedCodeEdit);
+              return textToolResult(`Created new file: ${target_filepath}\n\nLines: ${normalizedCodeEdit.split("\n").length}`);
+            }
+            return textToolResult(`Error: File not found: ${target_filepath}
+
+The file doesn't exist and the code_edit contains lazy markers.
+For new files, provide the complete content without "${EXISTING_CODE_MARKER}" markers.`);
+          }
+          originalCode = await file.text();
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          return textToolResult(`Error reading file ${target_filepath}: ${message}`);
+        }
+
+        const hasMarkers = normalizedCodeEdit.includes(EXISTING_CODE_MARKER);
+        const originalLineCount = originalCode.split("\n").length;
+
+        if (!hasMarkers && originalLineCount > 10) {
+          return textToolResult(`Error: Missing "${EXISTING_CODE_MARKER}" markers.
+
+Your code_edit would replace the entire file (${originalLineCount} lines) because it contains no markers.
+This is almost certainly unintended and would cause code loss.
+
+To fix, wrap your changes with markers:
+${EXISTING_CODE_MARKER}
+YOUR_CHANGES_HERE
+${EXISTING_CODE_MARKER}
+
+If you truly want to replace the entire file, use the 'write' tool instead.`);
+        }
+
+        if (!hasMarkers && originalLineCount > 3) {
+          pi.logger.warn(
+            `No markers in code_edit for ${target_filepath} (${originalLineCount} lines). Proceeding with full replacement.`,
+          );
+        }
+
+        throwIfAborted(signal);
+        const startTime = Date.now();
+        const result = await morph.fastApply.applyEdit(
+          {
+            originalCode,
+            codeEdit: normalizedCodeEdit,
+            instruction: instructions,
+            filepath: target_filepath,
+          },
+          {
+            morphApiUrl: MORPH_API_URL,
+            generateUdiff: true,
+          },
+        );
+        throwIfAborted(signal);
+        const apiDuration = Date.now() - startTime;
+
+        if (!result.success || !result.mergedCode) {
+          return textToolResult(`Morph API failed: ${result.error}
+
+Suggestion: Try using the native 'edit' tool instead with exact string replacement.
+The edit tool requires matching the exact text in the file.`);
+        }
+
+        const mergedCode = result.mergedCode;
+
+        if (detectMarkerLeakage(originalCode, mergedCode, hasMarkers)) {
+          pi.logger.warn(
+            `Marker leakage detected in merged output for ${target_filepath}`,
+          );
+          return textToolResult(`Morph API produced unsafe output for ${target_filepath}.
+
+Detected placeholder marker text ("${EXISTING_CODE_MARKER}") in merged output.
+This means the merge model treated markers as literal code instead of expanding them.
+
+No file changes were written.
+
+Options:
+1. Retry with more concrete surrounding context in code_edit
+2. Use the native 'edit' tool for exact string replacement
+3. Break the change into smaller, more targeted edits`);
+        }
+
+        const mergedLineCount = mergedCode.split("\n").length;
+        const truncation = detectCatastrophicTruncation(
+          originalCode,
+          mergedCode,
+          hasMarkers,
+        );
+
+        if (truncation.triggered) {
+          pi.logger.warn(
+            `Catastrophic truncation detected for ${target_filepath}: ${Math.round(truncation.charLoss * 100)}% char loss, ${Math.round(truncation.lineLoss * 100)}% line loss`,
+          );
+          return textToolResult(`Morph API produced a potentially destructive merge for ${target_filepath}.
+
+Original: ${originalLineCount} lines (${originalCode.length} chars)
+Merged:   ${mergedLineCount} lines (${mergedCode.length} chars)
+Loss:     ${Math.round(truncation.charLoss * 100)}% characters, ${Math.round(truncation.lineLoss * 100)}% lines
+
+Because markers were provided, this large shrink is likely unintended.
+No file changes were written.
+
+Options:
+1. Retry with more precise anchors in code_edit
+2. Use the native 'edit' tool for exact string replacement
+3. Break the change into smaller edits`);
+        }
+
+        try {
+          await Bun.write(filepath, mergedCode);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          return textToolResult(`Error writing file ${target_filepath}: ${message}`);
+        }
+
+        const udiff = result.udiff || "No changes detected";
+        const { linesAdded, linesRemoved } = result.changes;
+        const originalLines = originalCode.split("\n").length;
+        const mergedLines = mergedCode.split("\n").length;
+
+        return textToolResult(`Applied edit to ${target_filepath}
+
++${linesAdded} -${linesRemoved} lines | ${originalLines} -> ${mergedLines} total | ${apiDuration}ms
+
+\`\`\`diff
+${udiff.slice(0, 3000)}${udiff.length > 3000 ? "\n... (truncated)" : ""}
+\`\`\``);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return textToolResult(message, true);
+      }
+    },
+  } satisfies ToolDefinition<typeof parameters>;
+}

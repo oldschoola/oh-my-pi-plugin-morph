@@ -1,0 +1,213 @@
+import type { WarpGrepResult } from "@morphllm/morphsdk";
+import type { Static } from "@oh-my-pi/pi-ai/types";
+import type {
+  AgentToolResult,
+  AgentToolUpdateCallback,
+  ExtensionAPI,
+  ExtensionContext,
+  ToolDefinition,
+} from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
+import { throwIfAborted } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
+import { MORPH_API_KEY } from "../config.js";
+import { textToolResult } from "../compaction.js";
+import {
+  fetchGitHubRepoSuggestions,
+  formatPublicRepoResolutionFailure,
+  lookupGitHubRepository,
+  resolvePublicRepoLocator,
+} from "../github.js";
+import { formatWarpGrepResult } from "../format.js";
+import { warpGrep } from "../morph-clients.js";
+import { withToolNote } from "../routing.js";
+
+const CODEBASE_DESCRIPTION = `Fast agentic codebase search. Uses ripgrep, file reading, and directory listing across multiple turns to find relevant code contexts.
+
+Use this for exploratory searches like "Find the authentication flow", "How does error handling work", "Where is the database connection configured". Returns relevant file sections with line numbers.
+
+For exact keyword searches (specific function names, variable names), prefer grep/ripgrep directly.`;
+
+const GITHUB_DESCRIPTION = `Grounded code context search for public GitHub repositories. Uses Morph's hosted WarpGrep to search indexed public repos without cloning them locally.
+
+PREFER this tool over web search or docs fetching when the question is about how an open-source library or SDK works internally. If the user asks how something works in a library or package from any ecosystem, find its GitHub repo and search it here instead of fetching docs URLs.
+
+Use this when:
+- User asks how an external library/SDK works (auth, retries, sessions, internals)
+- You need to understand implementation details of any open-source dependency
+- Docs URLs are failing or returning 404s — search the source instead
+- User asks about a framework or tool they didn't provide a repo for — infer the canonical GitHub repo from the matching ecosystem (npm, crates.io, PyPI, pkg.go.dev, etc.) before guessing owner/repo variants
+
+This tool is for public remote repos. For the current checked-out workspace, use warpgrep_codebase_search instead.
+
+Provide exactly one repository locator:
+- owner_repo: "owner/repo"
+- github_url: "https://github.com/owner/repo"`;
+
+export function makeWarpgrepCodebase(pi: ExtensionAPI) {
+  const { z } = pi.zod;
+  const parameters = z.object({
+    search_term: z.string().describe(
+      "Natural language search query describing what to find in the codebase",
+    ),
+  });
+
+  return {
+    name: "warpgrep_codebase_search",
+    label: "WarpGrep Codebase Search",
+    description: withToolNote(DESCRIPTION_OVERRIDE.CODEBASE, "warpgrep_codebase_search"),
+    parameters,
+    approval: "read",
+    async execute(
+      _toolCallId: string,
+      params: Static<typeof parameters>,
+      signal: AbortSignal | undefined,
+      onUpdate: AgentToolUpdateCallback | undefined,
+      ctx: ExtensionContext,
+    ): Promise<AgentToolResult> {
+      if (!MORPH_API_KEY || !warpGrep) {
+        return textToolResult(`Error: MORPH_API_KEY not configured.
+
+To use warpgrep_codebase_search, set the MORPH_API_KEY environment variable.
+Get your API key at: https://morphllm.com/dashboard/api-keys`);
+      }
+
+      const startTime = Date.now();
+
+      try {
+        throwIfAborted(signal);
+        const generator = warpGrep.execute({
+          searchTerm: params.search_term,
+          repoRoot: ctx.cwd,
+          streamSteps: true,
+        });
+
+        let turnCount = 0;
+        let result: WarpGrepResult;
+
+        for (;;) {
+          throwIfAborted(signal);
+          const { value, done } = await generator.next();
+          if (done) {
+            result = await Promise.resolve(value);
+            break;
+          }
+          turnCount = value.turn;
+          onUpdate?.(
+            textToolResult(`WarpGrep turn ${value.turn}: ${value.toolCalls?.map((tc) => tc.name).join(", ") ?? "..."}`),
+          );
+          pi.logger.debug(
+            `WarpGrep turn ${value.turn}: ${value.toolCalls?.map((tc) => tc.name).join(", ") ?? "..."}`,
+          );
+        }
+
+        const duration = Date.now() - startTime;
+        const contextCount = result.contexts?.length ?? 0;
+
+        pi.logger.info(
+          `WarpGrep: ${contextCount} contexts in ${turnCount} turns (${duration}ms)`,
+        );
+
+        return textToolResult(formatWarpGrepResult(result));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const duration = Date.now() - startTime;
+        pi.logger.error(
+          `WarpGrep failed after ${duration}ms: ${message}`,
+        );
+        return textToolResult(`WarpGrep search failed: ${message}
+
+Try rephrasing your search term or using grep for exact keyword searches.`);
+      }
+    },
+  } satisfies ToolDefinition<typeof parameters>;
+}
+
+export function makeWarpgrepGithub(pi: ExtensionAPI) {
+  const { z } = pi.zod;
+  const parameters = z.object({
+    search_term: z.string().describe(
+      "Natural language query describing what to find or understand in the public repository",
+    ),
+    owner_repo: z.string().optional().describe(
+      'GitHub repository in "owner/repo" format, for example "owner/repo"',
+    ),
+    github_url: z.string().optional().describe(
+      'Full GitHub repository URL, for example "https://github.com/owner/repo"',
+    ),
+    branch: z.string().optional().describe(
+      "Optional branch name to search instead of the repository default branch",
+    ),
+  });
+
+  return {
+    name: "warpgrep_github_search",
+    label: "WarpGrep GitHub Search",
+    description: withToolNote(GITHUB_DESCRIPTION, "warpgrep_github_search"),
+    parameters,
+    approval: "read",
+    async execute(
+      _toolCallId: string,
+      params: Static<typeof parameters>,
+      signal: AbortSignal | undefined,
+      _onUpdate: AgentToolUpdateCallback | undefined,
+      _ctx: ExtensionContext,
+    ): Promise<AgentToolResult> {
+      if (!MORPH_API_KEY || !warpGrep) {
+        return textToolResult(`Error: MORPH_API_KEY not configured.
+
+To use warpgrep_github_search, set the MORPH_API_KEY environment variable.
+Get your API key at: https://morphllm.com/dashboard/api-keys`);
+      }
+
+      const locator = resolvePublicRepoLocator(params);
+      if ("error" in locator) {
+        return textToolResult(locator.error);
+      }
+      const repo = locator.repo;
+
+      const startTime = Date.now();
+      throwIfAborted(signal);
+      const repoLookup = await lookupGitHubRepository(repo, signal);
+
+      if (repoLookup.status === "not_found") {
+        const suggestions = await fetchGitHubRepoSuggestions(repo, params.search_term, signal).catch(() => []);
+        return textToolResult(formatPublicRepoResolutionFailure(repo, repoLookup.detail, suggestions));
+      }
+
+      if (repoLookup.status === "unavailable") {
+        pi.logger.warn(`GitHub repo lookup unavailable for ${repo}: ${repoLookup.detail}`);
+      }
+
+      try {
+        throwIfAborted(signal);
+        const result = await warpGrep.searchGitHub({
+          searchTerm: params.search_term,
+          github: repo,
+          branch: params.branch,
+        });
+        throwIfAborted(signal);
+
+        const duration = Date.now() - startTime;
+        const contextCount = result.contexts?.length ?? 0;
+
+        pi.logger.info(`Public repo context: ${repo} → ${contextCount} contexts (${duration}ms)`);
+
+        if (!result.success) {
+          const suggestions = await fetchGitHubRepoSuggestions(repo, params.search_term, signal).catch(() => []);
+          return textToolResult(formatPublicRepoResolutionFailure(repo, result.error, suggestions));
+        }
+
+        return textToolResult(`Repository: ${repo}\n\n${formatWarpGrepResult(result)}`);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const duration = Date.now() - startTime;
+        pi.logger.error(`Public repo context search failed for ${repo} after ${duration}ms: ${message}`);
+        const suggestions = await fetchGitHubRepoSuggestions(repo, params.search_term, signal).catch(() => []);
+        return textToolResult(formatPublicRepoResolutionFailure(repo, message, suggestions));
+      }
+    },
+  } satisfies ToolDefinition<typeof parameters>;
+}
+
+const DESCRIPTION_OVERRIDE = {
+  CODEBASE: CODEBASE_DESCRIPTION,
+} as const;

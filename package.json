@@ -1,0 +1,32 @@
+{
+  "name": "oh-my-pi-plugin-morph",
+  "version": "0.1.0",
+  "description": "oh-my-pi extension for Morph Fast Apply and WarpGrep tools",
+  "type": "module",
+  "omp": {
+    "extensions": ["./src/index.ts"]
+  },
+  "scripts": {
+    "test": "bun test ./test",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@morphllm/morphsdk": "0.2.173"
+  },
+  "devDependencies": {
+    "@oh-my-pi/pi-coding-agent": "latest",
+    "bun-types": "latest",
+    "typescript": "^5"
+  },
+  "keywords": [
+    "oh-my-pi",
+    "omp",
+    "plugin",
+    "morph",
+    "fast-apply",
+    "warpgrep",
+    "code-search",
+    "code-editing"
+  ],
+  "license": "MIT"
+}

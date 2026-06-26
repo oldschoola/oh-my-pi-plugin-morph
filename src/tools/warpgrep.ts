@@ -7,12 +7,13 @@ import type {
   ExtensionContext,
   ToolDefinition,
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
-import { throwIfAborted } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
+import { throwIfAborted, ToolAbortError } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
 import { MORPH_API_KEY } from "../config.js";
 import { textToolResult } from "../compaction.js";
 import {
   fetchGitHubRepoSuggestions,
   formatPublicRepoResolutionFailure,
+  type GitHubRepoSuggestion,
   lookupGitHubRepository,
   resolvePublicRepoLocator,
 } from "../github.js";
@@ -41,6 +42,33 @@ This tool is for public remote repos. For the current checked-out workspace, use
 Provide exactly one repository locator:
 - owner_repo: "owner/repo"
 - github_url: "https://github.com/owner/repo"`;
+
+// Reject as soon as `signal` aborts instead of waiting for an in-flight SDK or
+// network promise to settle, so a cancelled tool releases the harness promptly.
+// The underlying promise is still awaited (its rejection handled) to avoid an
+// unhandled rejection once it eventually settles in the background.
+function raceAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (!signal) return promise;
+  const abortError = () => {
+    const reason = signal.reason instanceof Error ? signal.reason : undefined;
+    return reason instanceof ToolAbortError ? reason : new ToolAbortError();
+  };
+  if (signal.aborted) return Promise.reject(abortError());
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(abortError());
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
+}
 
 export function makeWarpgrepCodebase(pi: ExtensionAPI) {
   const { z } = pi.zod;
@@ -85,7 +113,7 @@ Get your API key at: https://morphllm.com/dashboard/api-keys`);
 
         for (;;) {
           throwIfAborted(signal);
-          const { value, done } = await generator.next();
+          const { value, done } = await raceAbort(generator.next(), signal);
           if (done) {
             result = await Promise.resolve(value);
             break;
@@ -108,6 +136,13 @@ Get your API key at: https://morphllm.com/dashboard/api-keys`);
 
         return textToolResult(formatWarpGrepResult(result));
       } catch (error) {
+        if (
+          error instanceof ToolAbortError ||
+          (error instanceof Error && error.name === "AbortError") ||
+          signal?.aborted
+        ) {
+          throw error instanceof Error ? error : new ToolAbortError();
+        }
         const message = error instanceof Error ? error.message : String(error);
         const duration = Date.now() - startTime;
         pi.logger.error(
@@ -119,6 +154,20 @@ Try rephrasing your search term or using grep for exact keyword searches.`);
       }
     },
   } satisfies ToolDefinition<typeof parameters>;
+}
+
+function formatPublicRepoSearchFailure(
+  repo: string,
+  branch: string | undefined,
+  detail?: string,
+): string {
+  const target = branch ? `${repo}@${branch}` : repo;
+  return `WarpGrep search failed for ${target}: ${detail || "no error details were provided."}
+
+The repository was reachable, so this is a search failure, not a missing repository.
+- Retry the search, optionally with a more specific search term
+- If you supplied a branch, confirm it exists on ${repo}
+- If failures persist, fetch the repository's docs or source another way`;
 }
 
 export function makeWarpgrepGithub(pi: ExtensionAPI) {
@@ -166,10 +215,14 @@ Get your API key at: https://morphllm.com/dashboard/api-keys`);
 
       const startTime = Date.now();
       throwIfAborted(signal);
-      const repoLookup = await lookupGitHubRepository(repo, signal);
+      const repoLookup = await raceAbort(lookupGitHubRepository(repo, signal), signal);
 
       if (repoLookup.status === "not_found") {
-        const suggestions = await fetchGitHubRepoSuggestions(repo, params.search_term, signal).catch(() => []);
+        const suggestions = await raceAbort(
+          fetchGitHubRepoSuggestions(repo, params.search_term, signal),
+          signal,
+        ).catch((): GitHubRepoSuggestion[] => []);
+        throwIfAborted(signal);
         return textToolResult(formatPublicRepoResolutionFailure(repo, repoLookup.detail, suggestions));
       }
 
@@ -179,11 +232,14 @@ Get your API key at: https://morphllm.com/dashboard/api-keys`);
 
       try {
         throwIfAborted(signal);
-        const result = await warpGrep.searchGitHub({
-          searchTerm: params.search_term,
-          github: repo,
-          branch: params.branch,
-        });
+        const result = await raceAbort(
+          warpGrep.searchGitHub({
+            searchTerm: params.search_term,
+            github: repo,
+            branch: params.branch,
+          }),
+          signal,
+        );
         throwIfAborted(signal);
 
         const duration = Date.now() - startTime;
@@ -192,17 +248,22 @@ Get your API key at: https://morphllm.com/dashboard/api-keys`);
         pi.logger.info(`Public repo context: ${repo} → ${contextCount} contexts (${duration}ms)`);
 
         if (!result.success) {
-          const suggestions = await fetchGitHubRepoSuggestions(repo, params.search_term, signal).catch(() => []);
-          return textToolResult(formatPublicRepoResolutionFailure(repo, result.error, suggestions));
+          return textToolResult(formatPublicRepoSearchFailure(repo, params.branch, result.error));
         }
 
         return textToolResult(`Repository: ${repo}\n\n${formatWarpGrepResult(result)}`);
       } catch (error) {
+        if (
+          error instanceof ToolAbortError ||
+          (error instanceof Error && error.name === "AbortError") ||
+          signal?.aborted
+        ) {
+          throw error instanceof Error ? error : new ToolAbortError();
+        }
         const message = error instanceof Error ? error.message : String(error);
         const duration = Date.now() - startTime;
         pi.logger.error(`Public repo context search failed for ${repo} after ${duration}ms: ${message}`);
-        const suggestions = await fetchGitHubRepoSuggestions(repo, params.search_term, signal).catch(() => []);
-        return textToolResult(formatPublicRepoResolutionFailure(repo, message, suggestions));
+        return textToolResult(formatPublicRepoSearchFailure(repo, params.branch, message));
       }
     },
   } satisfies ToolDefinition<typeof parameters>;

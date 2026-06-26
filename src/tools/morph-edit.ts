@@ -1,4 +1,5 @@
 import type { Static } from "@oh-my-pi/pi-ai/types";
+import { unlink } from "node:fs/promises";
 import type {
   AgentToolResult,
   AgentToolUpdateCallback,
@@ -6,7 +7,7 @@ import type {
   ExtensionContext,
   ToolDefinition,
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
-import { throwIfAborted } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
+import { throwIfAborted, ToolAbortError } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
 import { MORPH_API_KEY, MORPH_API_URL } from "../config.js";
 import { textToolResult } from "../compaction.js";
 import {
@@ -83,7 +84,7 @@ export function makeMorphEdit(pi: ExtensionAPI) {
 To use morph_edit, set the MORPH_API_KEY environment variable.
 Get your API key at: https://morphllm.com/dashboard/api-keys
 
-Alternatively, use the native 'edit' tool for this change.`);
+Alternatively, use the native 'edit' tool for this change.`, true);
         }
 
         let originalCode: string;
@@ -91,18 +92,33 @@ Alternatively, use the native 'edit' tool for this change.`);
           const file = Bun.file(filepath);
           if (!(await file.exists())) {
             if (!normalizedCodeEdit.includes(EXISTING_CODE_MARKER)) {
+              throwIfAborted(signal);
               await Bun.write(filepath, normalizedCodeEdit);
+              if (signal?.aborted) {
+                // The write created a file that did not exist before this call.
+                // A cancelled tool must not leave a workspace mutation behind,
+                // so roll back the just-created file before rethrowing.
+                await unlink(filepath).catch(() => {});
+                throwIfAborted(signal);
+              }
               return textToolResult(`Created new file: ${target_filepath}\n\nLines: ${normalizedCodeEdit.split("\n").length}`);
             }
             return textToolResult(`Error: File not found: ${target_filepath}
 
 The file doesn't exist and the code_edit contains lazy markers.
-For new files, provide the complete content without "${EXISTING_CODE_MARKER}" markers.`);
+For new files, provide the complete content without "${EXISTING_CODE_MARKER}" markers.`, true);
           }
           originalCode = await file.text();
         } catch (error) {
+          if (
+            error instanceof ToolAbortError ||
+            (error instanceof Error && error.name === "AbortError") ||
+            signal?.aborted
+          ) {
+            throw error;
+          }
           const message = error instanceof Error ? error.message : String(error);
-          return textToolResult(`Error reading file ${target_filepath}: ${message}`);
+          return textToolResult(`Error reading file ${target_filepath}: ${message}`, true);
         }
 
         const hasMarkers = normalizedCodeEdit.includes(EXISTING_CODE_MARKER);
@@ -119,7 +135,7 @@ ${EXISTING_CODE_MARKER}
 YOUR_CHANGES_HERE
 ${EXISTING_CODE_MARKER}
 
-If you truly want to replace the entire file, use the 'write' tool instead.`);
+If you truly want to replace the entire file, use the 'write' tool instead.`, true);
         }
 
         if (!hasMarkers && originalLineCount > 3) {
@@ -149,7 +165,7 @@ If you truly want to replace the entire file, use the 'write' tool instead.`);
           return textToolResult(`Morph API failed: ${result.error}
 
 Suggestion: Try using the native 'edit' tool instead with exact string replacement.
-The edit tool requires matching the exact text in the file.`);
+The edit tool requires matching the exact text in the file.`, true);
         }
 
         const mergedCode = result.mergedCode;
@@ -168,7 +184,7 @@ No file changes were written.
 Options:
 1. Retry with more concrete surrounding context in code_edit
 2. Use the native 'edit' tool for exact string replacement
-3. Break the change into smaller, more targeted edits`);
+3. Break the change into smaller, more targeted edits`, true);
         }
 
         const mergedLineCount = mergedCode.split("\n").length;
@@ -194,14 +210,14 @@ No file changes were written.
 Options:
 1. Retry with more precise anchors in code_edit
 2. Use the native 'edit' tool for exact string replacement
-3. Break the change into smaller edits`);
+3. Break the change into smaller edits`, true);
         }
 
         try {
           await Bun.write(filepath, mergedCode);
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          return textToolResult(`Error writing file ${target_filepath}: ${message}`);
+          return textToolResult(`Error writing file ${target_filepath}: ${message}`, true);
         }
 
         const udiff = result.udiff || "No changes detected";
@@ -217,6 +233,13 @@ Options:
 ${udiff.slice(0, 3000)}${udiff.length > 3000 ? "\n... (truncated)" : ""}
 \`\`\``);
       } catch (error) {
+        if (
+          error instanceof ToolAbortError ||
+          (error instanceof Error && error.name === "AbortError") ||
+          signal?.aborted
+        ) {
+          throw error instanceof Error ? error : new ToolAbortError();
+        }
         const message = error instanceof Error ? error.message : String(error);
         return textToolResult(message, true);
       }

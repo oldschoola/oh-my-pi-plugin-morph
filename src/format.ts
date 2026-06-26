@@ -1,4 +1,10 @@
-import { isAbsolute, resolve as resolvePath } from "node:path";
+import { lstatSync, realpathSync, type Stats } from "node:fs";
+import {
+  isAbsolute,
+  relative as relativePath,
+  resolve as resolvePath,
+  sep,
+} from "node:path";
 import type { WarpGrepResult } from "@morphllm/morphsdk";
 import { EXISTING_CODE_MARKER } from "./config.js";
 
@@ -20,10 +26,86 @@ export function normalizeCodeEditInput(codeEdit: string): string {
   return codeEdit;
 }
 
+function tryRealpath(p: string): string | null {
+  try {
+    return realpathSync(p);
+  } catch {
+    return null;
+  }
+}
+
+function tryLstat(p: string): Stats | null {
+  try {
+    return lstatSync(p);
+  } catch {
+    return null;
+  }
+}
+
+// Walk each path component of `resolved` (already proven lexically contained in
+// `cwd` by the caller) starting from the real workspace root. For any component
+// that is a symlink, resolve it: reject dangling symlinks (their target cannot
+// be verified) and reject any symlink whose resolved real target escapes the
+// real workspace root. Returns true when following the path would escape the
+// workspace, so a write cannot create or truncate a file outside it.
+function symlinkEscapesRoot(realRoot: string, cwd: string, resolved: string): boolean {
+  const rel = relativePath(cwd, resolved);
+  const components = rel.split(sep).filter((c) => c.length > 0 && c !== ".");
+  let current = realRoot;
+  for (const component of components) {
+    current = resolvePath(current, component);
+    const stat = tryLstat(current);
+    if (stat === null) {
+      // This component does not exist yet; the remaining suffix is new and
+      // anchored inside the workspace, so no symlink can be traversed.
+      return false;
+    }
+    if (stat.isSymbolicLink()) {
+      const real = tryRealpath(current);
+      // Dangling symlink (null) or a target outside the workspace escapes.
+      if (real === null || escapesRoot(realRoot, real)) {
+        return true;
+      }
+      current = real;
+    }
+  }
+  return false;
+}
+
+function escapesRoot(root: string, target: string): boolean {
+  const rel = relativePath(root, target);
+  return rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel);
+}
+
 export function resolveFilepath(targetFilepath: string, cwd: string): string {
-  return isAbsolute(targetFilepath)
-    ? targetFilepath
-    : resolvePath(cwd, targetFilepath);
+  if (isAbsolute(targetFilepath)) {
+    throw new Error(
+      `Unsafe target_filepath: absolute paths are not allowed (${targetFilepath}). Provide a path relative to the workspace root.`,
+    );
+  }
+
+  const resolved = resolvePath(cwd, targetFilepath);
+  if (escapesRoot(cwd, resolved)) {
+    throw new Error(
+      `Unsafe target_filepath: resolved path escapes the workspace root (${targetFilepath}).`,
+    );
+  }
+
+  // Symlink-aware containment: starting from the real workspace root, walk the
+  // target's components and resolve any symlink encountered. This rejects an
+  // in-workspace symlink pointing outside the tree — including a dangling
+  // symlink whose target does not yet exist — which a write would otherwise
+  // follow to create or truncate a file outside the workspace. When cwd itself
+  // does not exist on disk, the lexical check above already guarantees
+  // containment.
+  const realRoot = tryRealpath(cwd);
+  if (realRoot !== null && symlinkEscapesRoot(realRoot, cwd, resolved)) {
+    throw new Error(
+      `Unsafe target_filepath: resolved real path escapes the workspace root (${targetFilepath}).`,
+    );
+  }
+
+  return resolved;
 }
 
 export function detectMarkerLeakage(
@@ -68,6 +150,16 @@ export function isValidContext(ctx: { file: string; content: string }): boolean 
   return Boolean(ctx.file) && PLAUSIBLE_PATH_RE.test(ctx.file) && ctx.content.length > 0;
 }
 
+// Escape XML metacharacters so repository-controlled file paths and content
+// cannot break out of the <file> envelope with closing tags or injected markup.
+function escapeXmlText(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function escapeXmlAttr(value: string): string {
+  return escapeXmlText(value).replace(/"/g, "&quot;");
+}
+
 export function formatWarpGrepResult(result: WarpGrepResult): string {
   if (!result.success) {
     return `Search failed: ${result.error || "search returned no error details."}`;
@@ -93,7 +185,7 @@ Fallback: use \`grep\` + \`read\` for local code search.`;
       !ctx.lines || ctx.lines === "*"
         ? "*"
         : ctx.lines.map(([s, e]) => `${s}-${e}`).join(",");
-    parts.push(`- ${ctx.file}:${rangeStr}`);
+    parts.push(`- ${escapeXmlText(ctx.file)}:${rangeStr}`);
   }
 
   parts.push("\nFile contents:\n");
@@ -103,8 +195,8 @@ Fallback: use \`grep\` + \`read\` for local code search.`;
       !ctx.lines || ctx.lines === "*"
         ? ""
         : ` lines="${ctx.lines.map(([s, e]) => `${s}-${e}`).join(",")}"`;
-    parts.push(`<file path="${ctx.file}"${rangeStr}>`);
-    parts.push(ctx.content);
+    parts.push(`<file path="${escapeXmlAttr(ctx.file)}"${rangeStr}>`);
+    parts.push(escapeXmlText(ctx.content));
     parts.push("</file>\n");
   }
 

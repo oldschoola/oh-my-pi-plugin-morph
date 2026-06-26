@@ -34,12 +34,83 @@ type ContentPart = {
   arguments?: Record<string, unknown>;
 };
 
+type BoundedBuffer = { out: string; limit: number };
+
+function bufferFull(buf: BoundedBuffer): boolean {
+  return buf.out.length >= buf.limit;
+}
+
+function appendBounded(buf: BoundedBuffer, text: string): void {
+  if (buf.out.length >= buf.limit) return;
+  const remaining = buf.limit - buf.out.length;
+  buf.out += text.length > remaining ? text.slice(0, remaining) : text;
+}
+
+// Serialize a JSON value into `buf`, stopping once the output budget is spent.
+// Result is byte-identical to JSON.stringify(value).slice(0, limit) for inputs
+// that fit, but large values are never fully stringified: strings are sliced
+// before escaping (escaped length >= raw length, so `remaining` raw chars always
+// cover the remaining budget) and the walk halts as soon as the budget is full.
+function appendBoundedJson(buf: BoundedBuffer, value: unknown): void {
+  if (bufferFull(buf)) return;
+
+  if (value === null || typeof value !== "object") {
+    if (typeof value === "string") {
+      const remaining = buf.limit - buf.out.length;
+      const slice = value.length > remaining ? value.slice(0, remaining) : value;
+      appendBounded(buf, JSON.stringify(slice));
+      return;
+    }
+    if (value === undefined || typeof value === "function" || typeof value === "symbol") {
+      appendBounded(buf, "null");
+      return;
+    }
+    appendBounded(buf, JSON.stringify(value as number | boolean));
+    return;
+  }
+
+  if (Array.isArray(value)) {
+    appendBounded(buf, "[");
+    for (let i = 0; i < value.length; i++) {
+      if (bufferFull(buf)) break;
+      if (i > 0) appendBounded(buf, ",");
+      const el = value[i];
+      if (el === undefined || typeof el === "function" || typeof el === "symbol") {
+        appendBounded(buf, "null");
+      } else {
+        appendBoundedJson(buf, el);
+      }
+    }
+    appendBounded(buf, "]");
+    return;
+  }
+
+  appendBounded(buf, "{");
+  let first = true;
+  for (const [key, v] of Object.entries(value as Record<string, unknown>)) {
+    if (bufferFull(buf)) break;
+    if (v === undefined || typeof v === "function" || typeof v === "symbol") continue;
+    if (!first) appendBounded(buf, ",");
+    first = false;
+    appendBounded(buf, JSON.stringify(key));
+    appendBounded(buf, ":");
+    appendBoundedJson(buf, v);
+  }
+  appendBounded(buf, "}");
+}
+
+function boundedJsonStringify(value: unknown, limit: number): string {
+  const buf: BoundedBuffer = { out: "", limit };
+  appendBoundedJson(buf, value);
+  return buf.out;
+}
+
 function serializeContentPart(part: ContentPart): string {
   switch (part.type) {
     case "text":
       return part.text || "";
     case "toolCall": {
-      const inputStr = JSON.stringify(part.arguments || {}).slice(0, 500);
+      const inputStr = boundedJsonStringify(part.arguments || {}, 500);
       return `[Tool: ${part.name || "unknown"}] ${inputStr}`;
     }
     case "thinking":
@@ -53,20 +124,30 @@ function serializeContentPart(part: ContentPart): string {
 
 function serializeMessageContent(message: MessageWithRole): string {
   if (typeof message.content === "string") return message.content;
+  if (!Array.isArray(message.content)) return "";
 
-  if (Array.isArray(message.content)) {
-    const parts = message.content
-      .map((part) => serializeContentPart(part as ContentPart))
-      .filter((text) => text.length > 0);
-
-    if (message.role === "toolResult" && message.toolName && parts.length > 0) {
-      return `[Tool: ${message.toolName}]\nOutput: ${parts.join("\n").slice(0, 2000)}`;
+  // Tool results are capped at 2000 chars. Append non-empty serialized parts
+  // straight into a bounded buffer and stop once it is full, so a large
+  // multi-part tool result is never fully materialized before the cap applies.
+  if (message.role === "toolResult" && message.toolName) {
+    const buf: BoundedBuffer = { out: "", limit: 2000 };
+    let appended = false;
+    for (const part of message.content) {
+      if (bufferFull(buf)) break;
+      const text = serializeContentPart(part as ContentPart);
+      if (text.length === 0) continue;
+      if (appended) appendBounded(buf, "\n");
+      appendBounded(buf, text);
+      appended = true;
     }
-
-    return parts.join("\n");
+    if (!appended) return "";
+    return `[Tool: ${message.toolName}]\nOutput: ${buf.out}`;
   }
 
-  return "";
+  const parts = message.content
+    .map((part) => serializeContentPart(part as ContentPart))
+    .filter((text) => text.length > 0);
+  return parts.join("\n");
 }
 
 export function serializeAgentMessagesForMorph(
@@ -127,6 +208,7 @@ export function makeBeforeCompact(pi: ExtensionAPI) {
       };
       return { compaction };
     } catch (error) {
+      if (event.signal?.aborted) throw error;
       const message = error instanceof Error ? error.message : String(error);
       pi.logger.warn("Morph compaction failed; falling back to native compaction", { error: message });
       return undefined;

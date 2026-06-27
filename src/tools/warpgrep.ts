@@ -8,7 +8,7 @@ import type {
   ToolDefinition,
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
 import { throwIfAborted, ToolAbortError } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
-import { MORPH_API_KEY } from "../config.js";
+import { MORPH_API_KEY, MORPH_WARPGREP_ENABLED } from "../config.js";
 import { textToolResult } from "../compaction.js";
 import {
   fetchGitHubRepoSuggestions,
@@ -37,7 +37,7 @@ Use this when:
 - Docs URLs are failing or returning 404s — search the source instead
 - User asks about a framework or tool they didn't provide a repo for — infer the canonical GitHub repo from the matching ecosystem (npm, crates.io, PyPI, pkg.go.dev, etc.) before guessing owner/repo variants
 
-This tool is for public remote repos. For the current checked-out workspace, use codebase_warpsearch instead.
+This tool is for public remote repos.
 
 Provide exactly one repository locator:
 - owner_repo: "owner/repo"
@@ -187,10 +187,14 @@ export function makeWarpgrepGithub(pi: ExtensionAPI) {
     ),
   });
 
+  const workspaceRedirect = MORPH_WARPGREP_ENABLED
+    ? "\n\nFor the current checked-out workspace, use codebase_warpsearch instead."
+    : "";
+
   return {
     name: "github_warpsearch",
     label: "GitHub Warpsearch",
-    description: withToolNote(GITHUB_DESCRIPTION, "github_warpsearch"),
+    description: withToolNote(GITHUB_DESCRIPTION + workspaceRedirect, "github_warpsearch"),
     parameters,
     approval: "read",
     async execute(

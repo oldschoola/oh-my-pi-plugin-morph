@@ -215,6 +215,45 @@ function routingGuidanceWithEnv(overrides: Record<string, string>): string {
   return parsed.guidance;
 }
 
+// Capture the registered github_warpsearch description under a given env so the
+// import-time MORPH_WARPGREP_ENABLED flag (baked once per process) can be
+// exercised by a subprocess. Returns the description text the tool registers.
+function githubToolDescriptionWithEnv(overrides: Record<string, string>): string {
+  const script = [
+    'const z = await import("zod/v4");',
+    "const tools = [];",
+    "const pi = { zod: z, logger: { debug() {}, info() {}, warn() {}, error() {} }, registerTool(t) { tools.push({ name: t.name, description: t.description }); }, on() {}, registerCommand() {} };",
+    'const mod = await import("./src/index.ts");',
+    "mod.default(pi);",
+    'const tool = tools.find((t) => t.name === "github_warpsearch");',
+    'process.stdout.write(JSON.stringify({ description: tool ? tool.description : "" }));',
+  ].join("\n");
+  const env = { ...process.env };
+  for (const key of [
+    "MORPH_EDIT",
+    "MORPH_WARPGREP",
+    "MORPH_WARPGREP_GITHUB",
+    "MORPH_COMPACT",
+    "MORPH_FASTCOMPACT",
+    "MORPH_ROUTING_HINT",
+  ]) {
+    delete env[key];
+  }
+  Object.assign(env, overrides);
+  const proc = Bun.spawnSync(["bun", "-e", script], {
+    cwd: join(import.meta.dir, ".."),
+    env,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const out = proc.stdout.toString().trim();
+  if (!out) {
+    throw new Error(`github tool description subprocess produced no output. stderr: ${proc.stderr.toString()}`);
+  }
+  const parsed = JSON.parse(out) as { description: string };
+  return parsed.description;
+}
+
 beforeEach(() => {
   setMorphApiKey(undefined);
   initMorphClients();
@@ -503,6 +542,13 @@ describe("extension wiring", () => {
       systemPrompt: result.systemPrompt,
     }, {});
     expect(idempotent.systemPrompt).toHaveLength(result.systemPrompt.length);
+  });
+
+  test("github_warpsearch stops advertising codebase_warpsearch when MORPH_WARPGREP=false", () => {
+    const enabled = githubToolDescriptionWithEnv({ MORPH_API_KEY: "sk-test" });
+    expect(enabled).toContain("codebase_warpsearch");
+    const disabled = githubToolDescriptionWithEnv({ MORPH_WARPGREP: "false", MORPH_API_KEY: "sk-test" });
+    expect(disabled).not.toContain("codebase_warpsearch");
   });
 });
 
@@ -1222,6 +1268,7 @@ describe("fastcompact execute", () => {
       writeFileSync(join(dir, "note.txt"), "some content to compact\n");
       const result = await runTool("fastcompact", { location: "note.txt" }, { cwd: dir });
       expect(toolText(result)).toContain("MORPH_API_KEY not configured");
+      expect(result.isError).toBe(true);
     });
   });
 

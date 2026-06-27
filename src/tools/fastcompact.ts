@@ -72,7 +72,15 @@ async function readBoundedFile(absPath: string, label: string): Promise<Resolved
       error: `Location too large: ${label} is ${info.size} bytes (limit ${FASTCOMPACT_MAX_BYTES}). Narrow the input before compacting.`,
     };
   }
-  const text = await Bun.file(absPath).text();
+  // Read at most FASTCOMPACT_MAX_BYTES + 1 through one sliced handle so a file
+  // grown or swapped between the stat above and this read cannot push an
+  // oversized payload into memory or on to Morph past the bound.
+  const text = await Bun.file(absPath).slice(0, FASTCOMPACT_MAX_BYTES + 1).text();
+  if (Buffer.byteLength(text, "utf8") > FASTCOMPACT_MAX_BYTES) {
+    return {
+      error: `Location too large: ${label} exceeds ${FASTCOMPACT_MAX_BYTES} bytes (changed during read). Narrow the input before compacting.`,
+    };
+  }
   if (!text.trim()) {
     return { error: `Location has no content to compact: ${label}` };
   }
@@ -191,7 +199,7 @@ export function makeFastCompact(pi: ExtensionAPI) {
 To use fastcompact, set the MORPH_API_KEY environment variable.
 Get your API key at: https://morphllm.com/dashboard/api-keys
 
-Alternatively, read the location with the native 'read' tool.`);
+Alternatively, read the location with the native 'read' tool.`, true);
         }
         const client = compactClient;
 

@@ -30,5 +30,13 @@ export const MORPH_WARPGREP_ENABLED = process.env.MORPH_WARPGREP !== "false";
 export const MORPH_WARPGREP_GITHUB_ENABLED =
   process.env.MORPH_WARPGREP_GITHUB !== "false";
 export const MORPH_COMPACT_ENABLED = process.env.MORPH_COMPACT !== "false";
+export const MORPH_FASTCOMPACT_ENABLED = process.env.MORPH_FASTCOMPACT !== "false";
 export const MORPH_ROUTING_HINT_ENABLED =
   process.env.MORPH_ROUTING_HINT !== "false";
+
+// Upper bound on the bytes of a single resolved fastcompact input (file or
+// artifact) checked before any Morph API call, and the maximum number of
+// locations one fastcompact call may target. Both gate the SDK call so a single
+// tool call cannot stream an unbounded payload to Morph.
+export const FASTCOMPACT_MAX_BYTES = 1_048_576;
+export const FASTCOMPACT_MAX_LOCATIONS = 10;

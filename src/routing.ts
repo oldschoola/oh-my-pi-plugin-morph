@@ -1,6 +1,7 @@
 import {
   MORPH_API_KEY,
   MORPH_EDIT_ENABLED,
+  MORPH_FASTCOMPACT_ENABLED,
   MORPH_ROUTING_HINT_HEADER,
   MORPH_WARPGREP_ENABLED,
   MORPH_WARPGREP_GITHUB_ENABLED,
@@ -16,14 +17,17 @@ export function buildToolNote(toolID: string): string {
   const notes: string[] = [];
 
   switch (toolID) {
-    case "morph_edit":
+    case "fast_edit":
       notes.push("Relative paths resolve from the active session directory.");
       break;
-    case "warpgrep_codebase_search":
+    case "codebase_warpsearch":
       notes.push("Searches the current project worktree, not just the immediate cwd.");
       break;
-    case "warpgrep_github_search":
+    case "github_warpsearch":
       notes.push("Use this for public GitHub source questions, not the current checked-out repo.");
+      break;
+    case "fastcompact":
+      notes.push("Compacts supplied file or artifact locations into text; it does not compact the conversation.");
       break;
     default:
       break;
@@ -54,7 +58,7 @@ export function buildMorphSystemRoutingHint(): string | null {
 
   if (MORPH_EDIT_ENABLED) {
     lines.push(
-      "- Prefer morph_edit for large or scattered edits inside existing files.",
+      "- Prefer fast_edit for large or scattered edits inside existing files.",
     );
     lines.push("- Use native edit for small exact replacements.");
     lines.push("- Use write for brand new files.");
@@ -62,13 +66,19 @@ export function buildMorphSystemRoutingHint(): string | null {
 
   if (MORPH_WARPGREP_ENABLED) {
     lines.push(
-      "- Use warpgrep_codebase_search for exploratory local codebase questions.",
+      "- Use codebase_warpsearch for exploratory local codebase questions.",
     );
   }
 
   if (MORPH_WARPGREP_GITHUB_ENABLED) {
     lines.push(
-      "- Use warpgrep_github_search for public GitHub source questions.",
+      "- Use github_warpsearch for public GitHub source questions.",
+    );
+  }
+
+  if (MORPH_FASTCOMPACT_ENABLED) {
+    lines.push(
+      "- Use fastcompact to condense a specific file or artifact into focused text; it does not compact the conversation.",
     );
   }
 

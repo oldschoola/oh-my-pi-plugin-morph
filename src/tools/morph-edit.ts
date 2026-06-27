@@ -22,8 +22,8 @@ import { withToolNote } from "../routing.js";
 
 const DESCRIPTION = `Edit existing files using partial code snippets with "// ... existing code ..." markers. Morph's AI merges your changes into the full file.
 
-WHEN TO USE morph_edit vs edit:
-- morph_edit: large files (300+ lines), multiple scattered changes, complex refactoring, whitespace-sensitive edits
+WHEN TO USE fast_edit vs edit:
+- fast_edit: large files (300+ lines), multiple scattered changes, complex refactoring, whitespace-sensitive edits
 - native edit: small exact string replacements, simple renames, single-line fixes (faster, no API call)
 - native write: creating new files from scratch
 
@@ -46,7 +46,7 @@ DISAMBIGUATION — when a file has repeated patterns, include enough unique cont
   BAD:  just "return result;" (matches many places)
   GOOD: include the unique function signature above it
 
-FALLBACK: If morph_edit fails (API error, timeout), use the native 'edit' tool with exact oldString/newString matching.`;
+FALLBACK: If fast_edit fails (API error, timeout), use the native 'edit' tool with exact oldString/newString matching.`;
 
 export function makeMorphEdit(pi: ExtensionAPI) {
   const { z } = pi.zod;
@@ -61,9 +61,9 @@ export function makeMorphEdit(pi: ExtensionAPI) {
   });
 
   return {
-    name: "morph_edit",
-    label: "Morph Edit",
-    description: withToolNote(DESCRIPTION, "morph_edit"),
+    name: "fast_edit",
+    label: "Fast Edit",
+    description: withToolNote(DESCRIPTION, "fast_edit"),
     parameters,
     approval: "write",
     async execute(
@@ -81,7 +81,7 @@ export function makeMorphEdit(pi: ExtensionAPI) {
         if (!MORPH_API_KEY || !morph) {
           return textToolResult(`Error: MORPH_API_KEY not configured.
 
-To use morph_edit, set the MORPH_API_KEY environment variable.
+To use fast_edit, set the MORPH_API_KEY environment variable.
 Get your API key at: https://morphllm.com/dashboard/api-keys
 
 Alternatively, use the native 'edit' tool for this change.`, true);

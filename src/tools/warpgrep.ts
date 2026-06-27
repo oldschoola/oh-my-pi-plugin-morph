@@ -37,7 +37,7 @@ Use this when:
 - Docs URLs are failing or returning 404s — search the source instead
 - User asks about a framework or tool they didn't provide a repo for — infer the canonical GitHub repo from the matching ecosystem (npm, crates.io, PyPI, pkg.go.dev, etc.) before guessing owner/repo variants
 
-This tool is for public remote repos. For the current checked-out workspace, use warpgrep_codebase_search instead.
+This tool is for public remote repos. For the current checked-out workspace, use codebase_warpsearch instead.
 
 Provide exactly one repository locator:
 - owner_repo: "owner/repo"
@@ -79,9 +79,9 @@ export function makeWarpgrepCodebase(pi: ExtensionAPI) {
   });
 
   return {
-    name: "warpgrep_codebase_search",
-    label: "WarpGrep Codebase Search",
-    description: withToolNote(DESCRIPTION_OVERRIDE.CODEBASE, "warpgrep_codebase_search"),
+    name: "codebase_warpsearch",
+    label: "Codebase Warpsearch",
+    description: withToolNote(DESCRIPTION_OVERRIDE.CODEBASE, "codebase_warpsearch"),
     parameters,
     approval: "read",
     async execute(
@@ -94,7 +94,7 @@ export function makeWarpgrepCodebase(pi: ExtensionAPI) {
       if (!MORPH_API_KEY || !warpGrep) {
         return textToolResult(`Error: MORPH_API_KEY not configured.
 
-To use warpgrep_codebase_search, set the MORPH_API_KEY environment variable.
+To use codebase_warpsearch, set the MORPH_API_KEY environment variable.
 Get your API key at: https://morphllm.com/dashboard/api-keys`);
       }
 
@@ -188,9 +188,9 @@ export function makeWarpgrepGithub(pi: ExtensionAPI) {
   });
 
   return {
-    name: "warpgrep_github_search",
-    label: "WarpGrep GitHub Search",
-    description: withToolNote(GITHUB_DESCRIPTION, "warpgrep_github_search"),
+    name: "github_warpsearch",
+    label: "GitHub Warpsearch",
+    description: withToolNote(GITHUB_DESCRIPTION, "github_warpsearch"),
     parameters,
     approval: "read",
     async execute(
@@ -203,7 +203,7 @@ export function makeWarpgrepGithub(pi: ExtensionAPI) {
       if (!MORPH_API_KEY || !warpGrep) {
         return textToolResult(`Error: MORPH_API_KEY not configured.
 
-To use warpgrep_github_search, set the MORPH_API_KEY environment variable.
+To use github_warpsearch, set the MORPH_API_KEY environment variable.
 Get your API key at: https://morphllm.com/dashboard/api-keys`);
       }
 

@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent/extensibility/exten
 import {
   MORPH_COMPACT_ENABLED,
   MORPH_EDIT_ENABLED,
+  MORPH_FASTCOMPACT_ENABLED,
   MORPH_ROUTING_HINT_ENABLED,
   MORPH_ROUTING_HINT_HEADER,
   MORPH_WARPGREP_ENABLED,
@@ -9,6 +10,7 @@ import {
 } from "./config.js";
 import { makeBeforeCompact } from "./compaction.js";
 import { buildMorphSystemRoutingHint } from "./routing.js";
+import { makeFastCompact } from "./tools/fastcompact.js";
 import { makeMorphEdit } from "./tools/morph-edit.js";
 import { makeWarpgrepCodebase, makeWarpgrepGithub } from "./tools/warpgrep.js";
 
@@ -16,6 +18,7 @@ export default function morphPlugin(pi: ExtensionAPI): void {
   if (MORPH_EDIT_ENABLED) pi.registerTool(makeMorphEdit(pi));
   if (MORPH_WARPGREP_ENABLED) pi.registerTool(makeWarpgrepCodebase(pi));
   if (MORPH_WARPGREP_GITHUB_ENABLED) pi.registerTool(makeWarpgrepGithub(pi));
+  if (MORPH_FASTCOMPACT_ENABLED) pi.registerTool(makeFastCompact(pi));
 
   if (MORPH_ROUTING_HINT_ENABLED) {
     const hint = buildMorphSystemRoutingHint();

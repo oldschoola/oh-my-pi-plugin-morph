@@ -2,9 +2,10 @@
 
 An [oh-my-pi](https://omp.sh) extension for [Morph](https://morphllm.com):
 
-- `morph_edit` — Morph Fast Apply for large or scattered edits inside existing files
-- `warpgrep_codebase_search` — agentic natural-language search over the current workspace
-- `warpgrep_github_search` — grounded source search for public GitHub repositories
+- `fast_edit` — Morph Fast Apply for large or scattered edits inside existing files
+- `codebase_warpsearch` — agentic natural-language search over the current workspace
+- `github_warpsearch` — grounded source search for public GitHub repositories
+- `fastcompact` — Morph Compact digest of a supplied file or artifact location, returned as text
 - Morph Compact API bridge for omp `session_before_compact`
 
 ## Quick start
@@ -47,16 +48,17 @@ All configuration is via environment variables.
 | Variable | Default | Description |
 |---|---:|---|
 | `MORPH_API_KEY` | required | Morph API key. Tools stay registered without it, but return setup guidance. |
-| `MORPH_EDIT` | `true` | Set `false` to disable `morph_edit`. |
+| `MORPH_EDIT` | `true` | Set `false` to disable `fast_edit`. |
 | `MORPH_WARPGREP` | `true` | Set `false` to disable local WarpGrep. |
 | `MORPH_WARPGREP_GITHUB` | `true` | Set `false` to disable public GitHub search. |
 | `MORPH_COMPACT` | `true` | Set `false` to disable the compaction hook and command. |
+| `MORPH_FASTCOMPACT` | `true` | Set `false` to disable the `fastcompact` tool. |
 | `MORPH_ROUTING_HINT` | `true` | Set `false` to skip per-turn tool-selection system hints. |
 | `MORPH_COMPACT_RATIO` | `0.3` | Target fraction to keep for Morph compaction. Valid range: `0.05` to `1`. |
 
 ## Tools
 
-### `morph_edit`
+### `fast_edit`
 
 Use for large files, multiple scattered edits in one file, whitespace-sensitive edits, and complex refactors where exact old-string matching is brittle.
 
@@ -64,18 +66,26 @@ The model supplies a partial snippet with `// ... existing code ...` markers. Th
 
 Approval tier: `write`.
 
-### `warpgrep_codebase_search`
+### `codebase_warpsearch`
 
 Use for exploratory questions about the checked-out workspace, such as "Find the auth flow" or "Where is retry logic handled?" Exact symbol or string lookup should use native search tools.
 
 Approval tier: `read`.
 
-### `warpgrep_github_search`
+### `github_warpsearch`
 
 Use for implementation-level questions about public libraries or SDKs. Provide exactly one of:
 
 - `owner_repo`, for example `vercel/next.js`
 - `github_url`, for example `https://github.com/vercel/next.js`
+
+Approval tier: `read`.
+
+### `fastcompact`
+
+Use to condense a specific file or artifact into shorter, query-focused text before reasoning over it. Pass a single `location` (a repo-relative file path or an `artifact://<id>` locator) or a `locations` array compacted in order. Optional `query` focuses the digest and `compression_ratio` overrides the configured ratio.
+
+The tool reads each location, calls Morph Compact with the raw text, and returns the compacted result. It never writes to disk, overwrites inputs, saves artifacts, or mutates session history, and it does not compact the conversation.
 
 Approval tier: `read`.
 
@@ -91,9 +101,18 @@ Manual trigger:
 
 The command calls `ctx.compact()`; the Morph bridge runs if enabled.
 
+`fastcompact` is a separate tool, not part of this hook. The `session_before_compact` hook and `/morph-compact` command compact conversation history; `fastcompact` compacts a supplied file or artifact location and returns text without touching the session.
+
 ## Routing hint
 
 By default the extension appends a concise tool-selection policy through `before_agent_start`. Set `MORPH_ROUTING_HINT=false` to disable it. Tool descriptions also include runtime notes, including missing-key guidance.
+
+## Agent access
+
+Registering these tools makes them available to the session, but each agent still controls which tools it exposes through its own manifest allowlist. Recommended allowlists:
+
+- Write-capable agents: `fast_edit`, `codebase_warpsearch`, `github_warpsearch`, and `fastcompact`.
+- Read-only agents: `codebase_warpsearch` and `github_warpsearch` only.
 
 ## Development
 

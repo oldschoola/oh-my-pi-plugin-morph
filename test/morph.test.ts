@@ -7,10 +7,10 @@ import type {
   ToolDefinition,
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
 import * as zod from "zod/v4";
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { COMPACT_RATIO, EXISTING_CODE_MARKER, GITHUB_REPO_SUGGESTION_LIMIT, MORPH_ROUTING_HINT_HEADER, setMorphApiKey } from "../src/config.js";
+import { COMPACT_RATIO, EXISTING_CODE_MARKER, FASTCOMPACT_MAX_BYTES, FASTCOMPACT_MAX_LOCATIONS, GITHUB_REPO_SUGGESTION_LIMIT, MORPH_ROUTING_HINT_HEADER, setMorphApiKey } from "../src/config.js";
 import { compactClient, initMorphClients, morph, warpGrep } from "../src/morph-clients.js";
 import { makeBeforeCompact, serializeAgentMessagesForMorph } from "../src/compaction.js";
 import {
@@ -161,6 +161,7 @@ function pluginRegistrationsWithEnv(overrides: Record<string, string>): {
     MORPH_WARPGREP: "true",
     MORPH_WARPGREP_GITHUB: "true",
     MORPH_COMPACT: "true",
+    MORPH_FASTCOMPACT: "true",
     MORPH_ROUTING_HINT: "true",
   };
   const proc = Bun.spawnSync(["bun", "-e", script], {
@@ -426,11 +427,19 @@ describe("extension wiring", () => {
     const { pi, tools, handlers, commands } = fakePi();
     morphPlugin(pi);
 
-    expect(tools.map((tool) => tool.name).sort()).toEqual([
-      "morph_edit",
-      "warpgrep_codebase_search",
-      "warpgrep_github_search",
+    const registeredNames = tools.map((tool) => tool.name);
+    expect([...registeredNames].sort()).toEqual([
+      "codebase_warpsearch",
+      "fast_edit",
+      "fastcompact",
+      "github_warpsearch",
     ]);
+    for (const oldName of ["morph_edit", "warpgrep_codebase_search", "warpgrep_github_search"]) {
+      expect(registeredNames).not.toContain(oldName);
+    }
+    for (const builtin of ["edit", "write", "read", "search", "find", "bash", "eval"]) {
+      expect(registeredNames).not.toContain(builtin);
+    }
     expect(handlers.before_agent_start).toHaveLength(1);
     expect(handlers.session_before_compact).toHaveLength(1);
     expect(commands["morph-compact"]).toBeTruthy();
@@ -451,11 +460,11 @@ describe("extension wiring", () => {
   });
 });
 
-describe("morph_edit execute", () => {
+describe("fast_edit execute", () => {
   test("returns isError when MORPH_API_KEY is missing", async () => {
     await withTempDir(async (dir) => {
       const result = await runTool(
-        "morph_edit",
+        "fast_edit",
         { target_filepath: "note.ts", instructions: "add", code_edit: "const a = 1;" },
         { cwd: dir },
       );
@@ -469,7 +478,7 @@ describe("morph_edit execute", () => {
     initMorphClients();
     await withTempDir(async (dir) => {
       const created = await runTool(
-        "morph_edit",
+        "fast_edit",
         { target_filepath: "fresh.ts", instructions: "create", code_edit: "export const x = 1;\n" },
         { cwd: dir },
       );
@@ -478,7 +487,7 @@ describe("morph_edit execute", () => {
       expect(readFileSync(join(dir, "fresh.ts"), "utf8")).toBe("export const x = 1;\n");
 
       const rejected = await runTool(
-        "morph_edit",
+        "fast_edit",
         {
           target_filepath: "lazy.ts",
           instructions: "create",
@@ -499,7 +508,7 @@ describe("morph_edit execute", () => {
       const original = `${Array.from({ length: 20 }, (_, i) => `const v${i} = ${i};`).join("\n")}\n`;
       writeFileSync(join(dir, "big.ts"), original);
       const result = await runTool(
-        "morph_edit",
+        "fast_edit",
         { target_filepath: "big.ts", instructions: "replace", code_edit: "const only = 1;" },
         { cwd: dir },
       );
@@ -514,7 +523,7 @@ describe("morph_edit execute", () => {
     initMorphClients();
     await withTempDir(async (dir) => {
       const absolute = await runTool(
-        "morph_edit",
+        "fast_edit",
         { target_filepath: "/etc/passwd", instructions: "x", code_edit: "const a = 1;" },
         { cwd: dir },
       );
@@ -522,7 +531,7 @@ describe("morph_edit execute", () => {
       expect(toolText(absolute)).toContain("Unsafe target_filepath");
 
       const escape = await runTool(
-        "morph_edit",
+        "fast_edit",
         { target_filepath: "../escape.ts", instructions: "x", code_edit: "const a = 1;" },
         { cwd: dir },
       );
@@ -544,7 +553,7 @@ describe("morph_edit execute", () => {
     await withTempDir(async (dir) => {
       writeFileSync(join(dir, "app.ts"), "export const x = 1;\nexport const y = 1;\n");
       const result = await runTool(
-        "morph_edit",
+        "fast_edit",
         {
           target_filepath: "app.ts",
           instructions: "bump",
@@ -571,7 +580,7 @@ describe("morph_edit execute", () => {
       const original = "export const x = 1;\nexport const y = 1;\n";
       writeFileSync(join(dir, "leak.ts"), original);
       const result = await runTool(
-        "morph_edit",
+        "fast_edit",
         {
           target_filepath: "leak.ts",
           instructions: "bump",
@@ -598,7 +607,7 @@ describe("morph_edit execute", () => {
       const original = `${Array.from({ length: 30 }, (_, i) => `const longVariableName_${i} = ${i};`).join("\n")}\n`;
       writeFileSync(join(dir, "trunc.ts"), original);
       const result = await runTool(
-        "morph_edit",
+        "fast_edit",
         {
           target_filepath: "trunc.ts",
           instructions: "shrink",
@@ -620,7 +629,7 @@ describe("morph_edit execute", () => {
       const original = "export const x = 1;\nexport const y = 1;\n";
       writeFileSync(join(dir, "fail.ts"), original);
       const result = await runTool(
-        "morph_edit",
+        "fast_edit",
         {
           target_filepath: "fail.ts",
           instructions: "bump",
@@ -652,7 +661,7 @@ describe("morph_edit execute", () => {
       };
       try {
         const result = await runTool(
-          "morph_edit",
+          "fast_edit",
           {
             target_filepath: "writefail.ts",
             instructions: "bump",
@@ -677,7 +686,7 @@ describe("morph_edit execute", () => {
       controller.abort();
       await expect(
         runTool(
-          "morph_edit",
+          "fast_edit",
           {
             target_filepath: "abort.ts",
             instructions: "bump",
@@ -699,7 +708,7 @@ describe("morph_edit execute", () => {
       controller.abort();
       await expect(
         runTool(
-          "morph_edit",
+          "fast_edit",
           { target_filepath: "created.ts", instructions: "create", code_edit: "export const x = 1;\n" },
           { cwd: dir },
           undefined,
@@ -728,7 +737,7 @@ describe("morph_edit execute", () => {
       writeFileSync(join(dir, "postabort.ts"), original);
       await expect(
         runTool(
-          "morph_edit",
+          "fast_edit",
           {
             target_filepath: "postabort.ts",
             instructions: "bump",
@@ -760,7 +769,7 @@ describe("morph_edit execute", () => {
       try {
         await expect(
           runTool(
-            "morph_edit",
+            "fast_edit",
             { target_filepath: "rollback.ts", instructions: "create", code_edit: "export const fresh = 1;\n" },
             { cwd: dir },
             undefined,
@@ -866,13 +875,13 @@ describe("GitHub helpers", () => {
 
 describe("warpgrep execute", () => {
   test("both tools report missing MORPH_API_KEY", async () => {
-    const codebase = await runTool("warpgrep_codebase_search", { search_term: "auth" }, { cwd: "/tmp" });
+    const codebase = await runTool("codebase_warpsearch", { search_term: "auth" }, { cwd: "/tmp" });
     expect(toolText(codebase)).toContain("MORPH_API_KEY not configured");
-    expect(toolText(codebase)).toContain("warpgrep_codebase_search");
+    expect(toolText(codebase)).toContain("codebase_warpsearch");
 
-    const github = await runTool("warpgrep_github_search", { search_term: "auth", owner_repo: "o/r" }, {});
+    const github = await runTool("github_warpsearch", { search_term: "auth", owner_repo: "o/r" }, {});
     expect(toolText(github)).toContain("MORPH_API_KEY not configured");
-    expect(toolText(github)).toContain("warpgrep_github_search");
+    expect(toolText(github)).toContain("github_warpsearch");
   });
 
   test("codebase search forwards streaming updates and formats the final result", async () => {
@@ -887,7 +896,7 @@ describe("warpgrep execute", () => {
     );
     const updates: string[] = [];
     const result = await runTool(
-      "warpgrep_codebase_search",
+      "codebase_warpsearch",
       { search_term: "auth" },
       { cwd: "/repo" },
       (update) => updates.push(toolText(update)),
@@ -905,7 +914,7 @@ describe("warpgrep execute", () => {
         throw new Error("warp exploded");
       })(),
     );
-    const result = await runTool("warpgrep_codebase_search", { search_term: "auth" }, { cwd: "/repo" });
+    const result = await runTool("codebase_warpsearch", { search_term: "auth" }, { cwd: "/repo" });
     expect(toolText(result)).toContain("WarpGrep search failed");
     expect(toolText(result)).toContain("warp exploded");
   });
@@ -913,7 +922,7 @@ describe("warpgrep execute", () => {
   test("github search returns the locator error for an invalid target", async () => {
     setMorphApiKey("sk-test");
     initMorphClients();
-    const result = await runTool("warpgrep_github_search", { search_term: "auth" }, {});
+    const result = await runTool("github_warpsearch", { search_term: "auth" }, {});
     expect(toolText(result)).toContain("Missing repository target");
   });
 
@@ -938,7 +947,7 @@ describe("warpgrep execute", () => {
         return { ok: false, status: 404, json: async () => ({}) };
       },
       async () => {
-        const result = await runTool("warpgrep_github_search", { search_term: "auth", owner_repo: "o/typo" }, {});
+        const result = await runTool("github_warpsearch", { search_term: "auth", owner_repo: "o/typo" }, {});
         expect(searched).toBe(false);
         expect(toolText(result)).toContain("Repository not found: o/typo");
         expect(toolText(result)).toContain("o/real");
@@ -959,7 +968,7 @@ describe("warpgrep execute", () => {
         return { ok: true, status: 200, json: async () => ({ full_name: "o/r", default_branch: "main", html_url: "https://github.com/o/r" }) };
       },
       async () => {
-        const text = toolText(await runTool("warpgrep_github_search", { search_term: "auth", owner_repo: "o/r", branch: "dev" }, {}));
+        const text = toolText(await runTool("github_warpsearch", { search_term: "auth", owner_repo: "o/r", branch: "dev" }, {}));
         expect(text).toContain("WarpGrep search failed for o/r");
         expect(text).toContain("transient upstream error");
         expect(text).toContain("search failure, not a missing repository");
@@ -984,7 +993,7 @@ describe("warpgrep execute", () => {
         return { ok: true, status: 200, json: async () => ({ full_name: "o/r", default_branch: "main", html_url: "https://github.com/o/r" }) };
       },
       async () => {
-        const text = toolText(await runTool("warpgrep_github_search", { search_term: "auth", owner_repo: "o/r" }, {}));
+        const text = toolText(await runTool("github_warpsearch", { search_term: "auth", owner_repo: "o/r" }, {}));
         expect(text).toContain("WarpGrep search failed for o/r");
         expect(text).toContain("socket hang up");
         expect(text).not.toContain("Repository not found");
@@ -1005,7 +1014,7 @@ describe("warpgrep execute", () => {
     );
     await expect(
       runTool(
-        "warpgrep_codebase_search",
+        "codebase_warpsearch",
         { search_term: "auth" },
         { cwd: "/repo" },
         undefined,
@@ -1027,7 +1036,7 @@ describe("warpgrep execute", () => {
       async () => {
         await expect(
           runTool(
-            "warpgrep_github_search",
+            "github_warpsearch",
             { search_term: "auth", owner_repo: "o/r" },
             {},
             undefined,
@@ -1057,7 +1066,7 @@ describe("warpgrep execute", () => {
       async () => {
         await expect(
           runTool(
-            "warpgrep_github_search",
+            "github_warpsearch",
             { search_term: "auth", owner_repo: "o/typo" },
             {},
             undefined,
@@ -1088,7 +1097,7 @@ describe("warpgrep execute", () => {
       async () => ({ ok: true, status: 200, json: async () => ({ full_name: "o/r", default_branch: "main", html_url: "https://github.com/o/r" }) }),
       async () => {
         const pending = runTool(
-          "warpgrep_github_search",
+          "github_warpsearch",
           { search_term: "auth", owner_repo: "o/r" },
           {},
           undefined,
@@ -1122,12 +1131,321 @@ describe("warpgrep execute", () => {
   });
 });
 
+describe("fastcompact execute", () => {
+  type CapturedCompact = {
+    input?: unknown;
+    query?: unknown;
+    compressionRatio?: unknown;
+    preserveRecent?: unknown;
+  };
+
+  function fakeResult(output: string): CompactResult {
+    return {
+      id: "fc1",
+      output,
+      messages: [],
+      usage: { input_tokens: 10, output_tokens: 3, compression_ratio: 0.3, processing_time_ms: 5 },
+      model: "morph-compact",
+    };
+  }
+
+  function stubCompact(handler: (input: CapturedCompact) => CompactResult): CapturedCompact[] {
+    const calls: CapturedCompact[] = [];
+    (compactClient as unknown as { compact: (input: CapturedCompact) => Promise<CompactResult> }).compact =
+      async (input) => {
+        calls.push(input);
+        return handler(input);
+      };
+    return calls;
+  }
+
+  function artifactCtx(dir: string, map: Record<string, string>): Record<string, unknown> {
+    return {
+      cwd: dir,
+      sessionManager: { getArtifactPath: async (id: string) => map[id] ?? null },
+    };
+  }
+
+  test("registers as a read-class tool", () => {
+    const tool = findRegisteredTool("fastcompact");
+    expect(tool.approval).toBe("read");
+  });
+
+  test("returns setup guidance without MORPH_API_KEY", async () => {
+    await withTempDir(async (dir) => {
+      writeFileSync(join(dir, "note.txt"), "some content to compact\n");
+      const result = await runTool("fastcompact", { location: "note.txt" }, { cwd: dir });
+      expect(toolText(result)).toContain("MORPH_API_KEY not configured");
+    });
+  });
+
+  test("compacts a local file as raw input with preserveRecent 0 and never mutates it", async () => {
+    setMorphApiKey("sk-test");
+    initMorphClients();
+    const original = "line one\nline two\nline three\n";
+    const calls = stubCompact(() => fakeResult("COMPACTED"));
+    await withTempDir(async (dir) => {
+      writeFileSync(join(dir, "doc.txt"), original);
+      const result = await runTool("fastcompact", { location: "doc.txt" }, { cwd: dir });
+      expect(result.isError).toBeFalsy();
+      expect(toolText(result)).toBe("COMPACTED");
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.input).toBe(original);
+      expect(calls[0]!.preserveRecent).toBe(0);
+      expect(calls[0]!.compressionRatio).toBe(COMPACT_RATIO);
+      expect(calls[0]!.query).toBeUndefined();
+      expect(readFileSync(join(dir, "doc.txt"), "utf8")).toBe(original);
+    });
+  });
+
+  test("forwards query and compression_ratio to Morph", async () => {
+    setMorphApiKey("sk-test");
+    initMorphClients();
+    const calls = stubCompact(() => fakeResult("OUT"));
+    await withTempDir(async (dir) => {
+      writeFileSync(join(dir, "big.txt"), "alpha beta gamma\n");
+      await runTool(
+        "fastcompact",
+        { location: "big.txt", query: "focus", compression_ratio: 0.6 },
+        { cwd: dir },
+      );
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.input).toBe("alpha beta gamma\n");
+      expect(calls[0]!.query).toBe("focus");
+      expect(calls[0]!.compressionRatio).toBe(0.6);
+      expect(calls[0]!.preserveRecent).toBe(0);
+    });
+  });
+
+  test("resolves an artifact locator through the session manager", async () => {
+    setMorphApiKey("sk-test");
+    initMorphClients();
+    const calls = stubCompact(() => fakeResult("ART_COMPACT"));
+    await withTempDir(async (dir) => {
+      const artifactFile = join(dir, "artifact-7.txt");
+      writeFileSync(artifactFile, "artifact body to shrink\n");
+      const result = await runTool(
+        "fastcompact",
+        { location: "artifact://art7" },
+        artifactCtx(dir, { art7: artifactFile }),
+      );
+      expect(result.isError).toBeFalsy();
+      expect(toolText(result)).toBe("ART_COMPACT");
+      expect(calls[0]!.input).toBe("artifact body to shrink\n");
+      expect(existsSync(artifactFile)).toBe(true);
+    });
+  });
+
+  test("rejects an unknown artifact with no Morph call", async () => {
+    setMorphApiKey("sk-test");
+    initMorphClients();
+    const calls = stubCompact(() => fakeResult("X"));
+    await withTempDir(async (dir) => {
+      const result = await runTool(
+        "fastcompact",
+        { location: "artifact://missing" },
+        artifactCtx(dir, {}),
+      );
+      expect(result.isError).toBe(true);
+      expect(toolText(result)).toContain("Unknown artifact");
+      expect(calls).toHaveLength(0);
+    });
+  });
+
+  test("rejects absolute paths, root escapes, directories, globs, and missing files with no Morph call", async () => {
+    setMorphApiKey("sk-test");
+    initMorphClients();
+    const calls = stubCompact(() => fakeResult("X"));
+    await withTempDir(async (dir) => {
+      mkdirSync(join(dir, "sub"));
+
+      const absolute = await runTool("fastcompact", { location: "/etc/passwd" }, { cwd: dir });
+      expect(absolute.isError).toBe(true);
+      expect(toolText(absolute)).toContain("absolute paths are not allowed");
+
+      const escape = await runTool("fastcompact", { location: "../escape.txt" }, { cwd: dir });
+      expect(escape.isError).toBe(true);
+      expect(toolText(escape)).toContain("escapes the workspace root");
+
+      const directory = await runTool("fastcompact", { location: "sub" }, { cwd: dir });
+      expect(directory.isError).toBe(true);
+      expect(toolText(directory)).toContain("directory");
+
+      const glob = await runTool("fastcompact", { location: "*.txt" }, { cwd: dir });
+      expect(glob.isError).toBe(true);
+      expect(toolText(glob)).toContain("Globs are not allowed");
+
+      const missing = await runTool("fastcompact", { location: "nope.txt" }, { cwd: dir });
+      expect(missing.isError).toBe(true);
+      expect(toolText(missing)).toContain("not found");
+
+      expect(calls).toHaveLength(0);
+    });
+  });
+
+  test("rejects empty content and oversize inputs before the SDK call", async () => {
+    setMorphApiKey("sk-test");
+    initMorphClients();
+    const calls = stubCompact(() => fakeResult("X"));
+    await withTempDir(async (dir) => {
+      writeFileSync(join(dir, "blank.txt"), "   \n\t\n");
+      const empty = await runTool("fastcompact", { location: "blank.txt" }, { cwd: dir });
+      expect(empty.isError).toBe(true);
+      expect(toolText(empty)).toContain("no content");
+
+      writeFileSync(join(dir, "huge.txt"), "A".repeat(FASTCOMPACT_MAX_BYTES + 1));
+      const oversize = await runTool("fastcompact", { location: "huge.txt" }, { cwd: dir });
+      expect(oversize.isError).toBe(true);
+      expect(toolText(oversize)).toContain("too large");
+
+      expect(calls).toHaveLength(0);
+    });
+  });
+
+  test("rejects too many locations before the SDK call", async () => {
+    setMorphApiKey("sk-test");
+    initMorphClients();
+    const calls = stubCompact(() => fakeResult("X"));
+    await withTempDir(async (dir) => {
+      const many = Array.from({ length: FASTCOMPACT_MAX_LOCATIONS + 1 }, (_, i) => `f${i}.txt`);
+      for (const name of many) writeFileSync(join(dir, name), "content\n");
+      const result = await runTool("fastcompact", { locations: many }, { cwd: dir });
+      expect(result.isError).toBe(true);
+      expect(toolText(result)).toContain("too many locations");
+      expect(calls).toHaveLength(0);
+    });
+  });
+
+  test("rejects ambiguous, empty, and missing location selections", async () => {
+    setMorphApiKey("sk-test");
+    initMorphClients();
+    const calls = stubCompact(() => fakeResult("X"));
+    await withTempDir(async (dir) => {
+      writeFileSync(join(dir, "a.txt"), "a\n");
+
+      const both = await runTool("fastcompact", { location: "a.txt", locations: ["a.txt"] }, { cwd: dir });
+      expect(both.isError).toBe(true);
+      expect(toolText(both)).toContain("not both");
+
+      const neither = await runTool("fastcompact", {}, { cwd: dir });
+      expect(neither.isError).toBe(true);
+      expect(toolText(neither)).toContain("provide 'location'");
+
+      const emptyList = await runTool("fastcompact", { locations: [] }, { cwd: dir });
+      expect(emptyList.isError).toBe(true);
+      expect(toolText(emptyList)).toContain("at least one");
+
+      expect(calls).toHaveLength(0);
+    });
+  });
+
+  test("compacts multiple locations in order with labeled sections", async () => {
+    setMorphApiKey("sk-test");
+    initMorphClients();
+    const seen: unknown[] = [];
+    stubCompact((input) => {
+      seen.push(input.input);
+      return fakeResult(`compacted:${String(input.input).trim()}`);
+    });
+    await withTempDir(async (dir) => {
+      writeFileSync(join(dir, "first.txt"), "first body\n");
+      writeFileSync(join(dir, "second.txt"), "second body\n");
+      const result = await runTool(
+        "fastcompact",
+        { locations: ["first.txt", "second.txt"] },
+        { cwd: dir },
+      );
+      expect(result.isError).toBeFalsy();
+      const text = toolText(result);
+      expect(text).toContain("## first.txt");
+      expect(text).toContain("## second.txt");
+      expect(text.indexOf("## first.txt")).toBeLessThan(text.indexOf("## second.txt"));
+      expect(text).toContain("compacted:first body");
+      expect(seen).toEqual(["first body\n", "second body\n"]);
+    });
+  });
+
+  test("rejects when aborted before the Morph call", async () => {
+    setMorphApiKey("sk-test");
+    initMorphClients();
+    const calls = stubCompact(() => fakeResult("X"));
+    await withTempDir(async (dir) => {
+      writeFileSync(join(dir, "doc.txt"), "content\n");
+      const controller = new AbortController();
+      controller.abort();
+      await expect(
+        runTool("fastcompact", { location: "doc.txt" }, { cwd: dir }, undefined, controller.signal),
+      ).rejects.toThrow();
+      expect(calls).toHaveLength(0);
+    });
+  });
+
+  test("rejects when aborted after the Morph call instead of returning a result", async () => {
+    setMorphApiKey("sk-test");
+    initMorphClients();
+    const controller = new AbortController();
+    stubCompact(() => {
+      controller.abort();
+      return fakeResult("LATE");
+    });
+    await withTempDir(async (dir) => {
+      writeFileSync(join(dir, "doc.txt"), "content\n");
+      await expect(
+        runTool("fastcompact", { location: "doc.txt" }, { cwd: dir }, undefined, controller.signal),
+      ).rejects.toThrow();
+    });
+  });
+
+  test("rejects an out-of-range or non-finite compression_ratio before any Morph call", async () => {
+    setMorphApiKey("sk-test");
+    initMorphClients();
+    const calls = stubCompact(() => fakeResult("X"));
+    await withTempDir(async (dir) => {
+      writeFileSync(join(dir, "doc.txt"), "content to compact\n");
+      for (const ratio of [0, 1.5, -0.2, Number.POSITIVE_INFINITY, Number.NaN]) {
+        const result = await runTool(
+          "fastcompact",
+          { location: "doc.txt", compression_ratio: ratio },
+          { cwd: dir },
+        );
+        expect(result.isError).toBe(true);
+        expect(toolText(result)).toContain("compression_ratio");
+        expect(toolText(result)).toContain("between 0.05 and 1");
+      }
+      expect(calls).toHaveLength(0);
+    });
+  });
+
+  test("rejects promptly when aborted while the Morph call is in flight", async () => {
+    setMorphApiKey("sk-test");
+    initMorphClients();
+    const controller = new AbortController();
+    const calls: CapturedCompact[] = [];
+    (compactClient as unknown as { compact: (input: CapturedCompact) => Promise<CompactResult> }).compact =
+      (input) => {
+        calls.push(input);
+        // Abort once the request is in flight; the returned promise never
+        // settles on its own, so only the abort race can unblock the await.
+        // Without raceAbort this test would hang until the runner times out.
+        queueMicrotask(() => controller.abort());
+        return new Promise<CompactResult>(() => {});
+      };
+    await withTempDir(async (dir) => {
+      writeFileSync(join(dir, "doc.txt"), "content to compact\n");
+      await expect(
+        runTool("fastcompact", { location: "doc.txt" }, { cwd: dir }, undefined, controller.signal),
+      ).rejects.toThrow();
+      expect(calls).toHaveLength(1);
+    });
+  });
+});
+
 describe("feature flag wiring", () => {
-  test("MORPH_EDIT=false removes only morph_edit", () => {
+  test("MORPH_EDIT=false removes only fast_edit", () => {
     const registered = pluginRegistrationsWithEnv({ MORPH_EDIT: "false" });
-    expect(registered.tools).not.toContain("morph_edit");
-    expect(registered.tools).toContain("warpgrep_codebase_search");
-    expect(registered.tools).toContain("warpgrep_github_search");
+    expect(registered.tools).not.toContain("fast_edit");
+    expect(registered.tools).toContain("codebase_warpsearch");
+    expect(registered.tools).toContain("github_warpsearch");
     expect(registered.handlers).toContain("before_agent_start");
     expect(registered.handlers).toContain("session_before_compact");
     expect(registered.commands).toContain("morph-compact");
@@ -1135,17 +1453,17 @@ describe("feature flag wiring", () => {
 
   test("MORPH_WARPGREP=false removes only the codebase search tool", () => {
     const registered = pluginRegistrationsWithEnv({ MORPH_WARPGREP: "false" });
-    expect(registered.tools).not.toContain("warpgrep_codebase_search");
-    expect(registered.tools).toContain("morph_edit");
-    expect(registered.tools).toContain("warpgrep_github_search");
+    expect(registered.tools).not.toContain("codebase_warpsearch");
+    expect(registered.tools).toContain("fast_edit");
+    expect(registered.tools).toContain("github_warpsearch");
     expect(registered.handlers).toContain("before_agent_start");
   });
 
   test("MORPH_WARPGREP_GITHUB=false removes only the github search tool", () => {
     const registered = pluginRegistrationsWithEnv({ MORPH_WARPGREP_GITHUB: "false" });
-    expect(registered.tools).not.toContain("warpgrep_github_search");
-    expect(registered.tools).toContain("morph_edit");
-    expect(registered.tools).toContain("warpgrep_codebase_search");
+    expect(registered.tools).not.toContain("github_warpsearch");
+    expect(registered.tools).toContain("fast_edit");
+    expect(registered.tools).toContain("codebase_warpsearch");
   });
 
   test("MORPH_COMPACT=false removes the compaction hook and command", () => {
@@ -1153,7 +1471,16 @@ describe("feature flag wiring", () => {
     expect(registered.handlers).not.toContain("session_before_compact");
     expect(registered.commands).not.toContain("morph-compact");
     expect(registered.handlers).toContain("before_agent_start");
-    expect(registered.tools).toEqual(["morph_edit", "warpgrep_codebase_search", "warpgrep_github_search"]);
+    expect(registered.tools).toContain("fastcompact");
+    expect(registered.tools).toEqual(["codebase_warpsearch", "fast_edit", "fastcompact", "github_warpsearch"]);
+  });
+
+  test("MORPH_FASTCOMPACT=false removes only fastcompact", () => {
+    const registered = pluginRegistrationsWithEnv({ MORPH_FASTCOMPACT: "false" });
+    expect(registered.tools).not.toContain("fastcompact");
+    expect(registered.tools).toEqual(["codebase_warpsearch", "fast_edit", "github_warpsearch"]);
+    expect(registered.handlers).toContain("session_before_compact");
+    expect(registered.commands).toContain("morph-compact");
   });
 
   test("MORPH_ROUTING_HINT=false removes only the before_agent_start hook", () => {
@@ -1161,6 +1488,6 @@ describe("feature flag wiring", () => {
     expect(registered.handlers).not.toContain("before_agent_start");
     expect(registered.handlers).toContain("session_before_compact");
     expect(registered.commands).toContain("morph-compact");
-    expect(registered.tools).toEqual(["morph_edit", "warpgrep_codebase_search", "warpgrep_github_search"]);
+    expect(registered.tools).toEqual(["codebase_warpsearch", "fast_edit", "fastcompact", "github_warpsearch"]);
   });
 });

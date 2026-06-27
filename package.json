@@ -26,7 +26,8 @@
     "fast-apply",
     "warpgrep",
     "code-search",
-    "code-editing"
+    "code-editing",
+    "compaction"
   ],
   "license": "MIT"
 }

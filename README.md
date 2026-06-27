@@ -35,7 +35,7 @@ MORPH_API_KEY=sk-... omp -e ./src/index.ts -p "List the Morph tools you can call
 Installed npm/git specs use omp's plugin installer:
 
 ```bash
-omp plugin install https://github.com/OutlineDriven/odin-reflector
+omp plugin install https://github.com/metaphorics/oh-my-pi-plugin-morph
 ```
 
 The package manifest loads the extension from `omp.extensions: ["./src/index.ts"]`.

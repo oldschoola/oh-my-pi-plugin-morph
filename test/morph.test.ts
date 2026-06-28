@@ -688,7 +688,7 @@ describe("compaction bridge", () => {
     Object.assign(event, { signal: controller.signal });
     const handler = makeBeforeCompact(pi);
 
-    await expect(handler(event, { hasUI: false } as never)).rejects.toThrow();
+    await expect(handler(event, { hasUI: false } as never)).rejects.toThrow("Operation aborted");
     expect(calls).toHaveLength(0);
   });
 

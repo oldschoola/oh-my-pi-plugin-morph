@@ -9,6 +9,7 @@ import type {
 import { throwIfAborted } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
 import { COMPACT_RATIO } from "./config.js";
 import { compactClient, morphReady } from "./morph-clients.js";
+import { raceAbort } from "./abort.js";
 
 export function formatCompressionPercent(result: CompactResult): number {
   return Math.round(result.usage.compression_ratio * 100);
@@ -192,12 +193,15 @@ export function makeBeforeCompact(pi: ExtensionAPI) {
     if (input.length === 0) return undefined;
 
     try {
-      const result = await compactClient.compact({
-        messages: input,
-        compressionRatio: COMPACT_RATIO,
-        preserveRecent: 0,
-        query: focus,
-      });
+      const result = await raceAbort(
+        compactClient.compact({
+          messages: input,
+          compressionRatio: COMPACT_RATIO,
+          preserveRecent: 0,
+          query: focus,
+        }),
+        event.signal,
+      );
       throwIfAborted(event.signal);
 
       const summary = compactResultText(result);

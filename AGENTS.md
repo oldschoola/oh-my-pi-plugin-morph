@@ -13,7 +13,7 @@
 - Rule: Keep the native floor when strengthening Morph prompts: native `edit` for trivial exact replacements, native `write` for new files, and native search for exact symbol or string lookups.
 - Why: The routing policy and tool docs intentionally prefer Morph where it fits without wasting remote calls on cheap local operations.
 
-- Rule: Morph drives automatic and manual `/compact` compaction by default. It yields to an active `snapcompact` strategy when no focus text is present, and forwards `/compact <focus>` to Morph as a query. The bridge returns `undefined` so the host runs its native strategy on every failure: no key, empty history, empty serialized input, empty summary, or API error.
+- Rule: Morph drives automatic and manual `/compact` compaction by default. It yields to an active `snapcompact` strategy when no focus text is present, and forwards `/compact <focus>` to Morph as a query. The bridge returns `undefined` for native-fallback cases — no key, empty history, empty serialized input, empty summary, or API error — so the host runs its native strategy; an abort after Morph responds re-throws instead of falling back.
 - Why: `snapcompact` remains a valid host image-archive strategy the plugin must not override for unfocused compaction. Focused compaction is a directed LLM summary path, so Morph receives the focus query.
 
 ## Extension lifecycle state

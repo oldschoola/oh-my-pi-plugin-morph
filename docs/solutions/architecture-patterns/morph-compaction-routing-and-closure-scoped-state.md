@@ -45,7 +45,7 @@ One host strategy remains special. `snapcompact` is host-owned image-archive com
 
 Keep one Morph-default `session_before_compact` hook:
 
-- Register the hook only when `MORPH_COMPACT` is enabled.
+- Register the hook only when `MORPH_COMPACT_ENABLED` is true.
 - Yield when `event.preparation.settings.strategy === "snapcompact"` and no focus text is present.
 - Serialize the selected messages and return `undefined` on empty history or empty serialized input.
 - Forward `/compact <focus>` by passing the trimmed focus text as Morph's `query` field, including when configured snapcompact would otherwise fall back to a native LLM summary.
@@ -130,7 +130,7 @@ Tests should cover the remaining contract:
 - `/compact <focus>` forwards the focus as `query`.
 - No `/morph-compact` command is registered.
 - No `auto_compaction_start` or `auto_compaction_end` route handlers are registered.
-- Failure cases still return `undefined`, while abort-after-response still rejects.
+- Failure cases still return `undefined`, while in-flight aborts and abort-after-response failures still reject.
 
 ## Related
 

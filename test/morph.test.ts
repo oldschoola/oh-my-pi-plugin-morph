@@ -538,6 +538,25 @@ describe("compaction bridge", () => {
     await expect(handler(event, { hasUI: false } as never)).rejects.toThrow();
   });
 
+  test("rejects promptly when aborted while the Morph compaction is in flight", async () => {
+    setMorphApiKey("sk-test");
+    initMorphClients();
+    const client = requireCompactClient();
+    const controller = new AbortController();
+    client.compact = () => {
+      // Abort once the request is in flight; the returned promise never settles
+      // on its own, so only the abort race can unblock the await.
+      queueMicrotask(() => controller.abort());
+      return new Promise<CompactResult>(() => {});
+    };
+
+    const { pi } = fakePi();
+    const event = compactEvent([textMsg("user", "hi")]);
+    Object.assign(event, { signal: controller.signal });
+    const handler = makeBeforeCompact(pi);
+    await expect(handler(event, { hasUI: false } as never)).rejects.toThrow();
+  });
+
   test("snapcompact strategy yields to native compaction", async () => {
     setMorphApiKey("sk-test");
     initMorphClients();

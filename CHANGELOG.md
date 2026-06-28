@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Morph compaction now drives all automatic and manual `/compact` compaction by default when Morph is configured. Previously only automatic compaction defaulted to Morph, while manual `/compact` required `MORPH_COMPACT_MANUAL=true`.
 - `/compact <focus>` now forwards the focus text to Morph as a compaction query, including when the configured strategy is `snapcompact`; unfocused `snapcompact` still yields to the host image-archive path.
 - Morph compaction races the in-flight Morph request against the compaction abort signal, so a cancelled compaction rejects promptly instead of blocking on the remote round-trip.
+- Morph compaction yields to the host's native summary when `remoteEnabled` is false (the `/compact soft` local-only path), so a local-only request never egresses the transcript to Morph.
+- Morph compaction folds the previous compaction summary and split-turn prefix messages into the Morph request, matching the native summarizer so iterative and split-turn history is not dropped.
 
 ### Removed
 

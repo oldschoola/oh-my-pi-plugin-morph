@@ -63,22 +63,30 @@ function compactEvent(
   messagesToSummarize: unknown[],
   customInstructions?: string,
   strategy?: string,
+  prep?: {
+    remoteEnabled?: boolean;
+    previousSummary?: string;
+    turnPrefixMessages?: unknown[];
+    isSplitTurn?: boolean;
+  },
 ): SessionBeforeCompactEvent {
   return {
     type: "session_before_compact",
     preparation: {
       firstKeptEntryId: "e1",
       messagesToSummarize,
-      turnPrefixMessages: [],
+      turnPrefixMessages: prep?.turnPrefixMessages ?? [],
       recentMessages: [],
-      isSplitTurn: false,
+      isSplitTurn: prep?.isSplitTurn ?? false,
       tokensBefore: 1234,
+      previousSummary: prep?.previousSummary,
       fileOps: { readFiles: [], modifiedFiles: [] },
       settings: {
         enabled: true,
         strategy,
         reserveTokens: 0,
         keepRecentTokens: 0,
+        remoteEnabled: prep?.remoteEnabled,
       },
     },
     branchEntries: [],
@@ -596,6 +604,92 @@ describe("compaction bridge", () => {
     });
     expect(calls).toHaveLength(1);
     expect(calls[0]?.query).toBe("focus on auth");
+  });
+
+  test("yields to native when remote compaction is disabled (/compact soft)", async () => {
+    setMorphApiKey("sk-test");
+    initMorphClients();
+    const client = requireCompactClient();
+    const calls: unknown[] = [];
+    client.compact = async (input) => {
+      calls.push(input);
+      return morphResult("SUMMARY");
+    };
+    const { pi } = fakePi();
+    const ctx = { hasUI: false };
+    const handler = makeBeforeCompact(pi);
+
+    await expect(
+      handler(compactEvent([textMsg("user", "hi")], undefined, "context-full", { remoteEnabled: false }), ctx as never),
+    ).resolves.toBeUndefined();
+    expect(calls).toHaveLength(0);
+  });
+
+  test("folds the previous compaction summary into the Morph input", async () => {
+    setMorphApiKey("sk-test");
+    initMorphClients();
+    const client = requireCompactClient();
+    const calls: Array<{ messages?: Array<{ content: string }> }> = [];
+    client.compact = async (input) => {
+      calls.push(input as { messages?: Array<{ content: string }> });
+      return morphResult("SUMMARY");
+    };
+    const { pi } = fakePi();
+    const ctx = { hasUI: false };
+    const handler = makeBeforeCompact(pi);
+
+    await expect(
+      handler(compactEvent([textMsg("user", "hi")], undefined, undefined, { previousSummary: "OLD_SUMMARY" }), ctx as never),
+    ).resolves.toEqual({ compaction: { summary: "SUMMARY", firstKeptEntryId: "e1", tokensBefore: 1234 } });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.messages?.[0]?.content).toContain("OLD_SUMMARY");
+  });
+
+  test("includes split-turn prefix messages in the Morph input", async () => {
+    setMorphApiKey("sk-test");
+    initMorphClients();
+    const client = requireCompactClient();
+    const calls: Array<{ messages?: Array<{ content: string }> }> = [];
+    client.compact = async (input) => {
+      calls.push(input as { messages?: Array<{ content: string }> });
+      return morphResult("SUMMARY");
+    };
+    const { pi } = fakePi();
+    const ctx = { hasUI: false };
+    const handler = makeBeforeCompact(pi);
+
+    await expect(
+      handler(
+        compactEvent([textMsg("user", "older")], undefined, undefined, {
+          isSplitTurn: true,
+          turnPrefixMessages: [textMsg("user", "PREFIX_CONTENT")],
+        }),
+        ctx as never,
+      ),
+    ).resolves.toEqual({ compaction: { summary: "SUMMARY", firstKeptEntryId: "e1", tokensBefore: 1234 } });
+    expect(calls).toHaveLength(1);
+    const contents = (calls[0]?.messages ?? []).map((m) => m.content).join("\n");
+    expect(contents).toContain("PREFIX_CONTENT");
+  });
+
+  test("does not launch the Morph request when already aborted before the call", async () => {
+    setMorphApiKey("sk-test");
+    initMorphClients();
+    const client = requireCompactClient();
+    const calls: unknown[] = [];
+    client.compact = async (input) => {
+      calls.push(input);
+      return morphResult("SUMMARY");
+    };
+    const controller = new AbortController();
+    controller.abort();
+    const { pi } = fakePi();
+    const event = compactEvent([textMsg("user", "hi")]);
+    Object.assign(event, { signal: controller.signal });
+    const handler = makeBeforeCompact(pi);
+
+    await expect(handler(event, { hasUI: false } as never)).rejects.toThrow();
+    expect(calls).toHaveLength(0);
   });
 
   test("non-snapcompact compaction runs Morph by default", async () => {

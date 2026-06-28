@@ -47,7 +47,9 @@ Keep one Morph-default `session_before_compact` hook:
 
 - Register the hook only when `MORPH_COMPACT_ENABLED` is true.
 - Yield when `event.preparation.settings.strategy === "snapcompact"` and no focus text is present.
+- Yield when `event.preparation.settings.remoteEnabled === false` (the `/compact soft` local-only path); a local-only compaction must not egress the transcript to Morph.
 - Serialize the selected messages and return `undefined` on empty history or empty serialized input.
+- Fold the inputs the native summarizer owns: prepend `previousSummary` as a synthetic leading message and append split-turn `turnPrefixMessages`, since the host applies the hook summary verbatim and keeps only entries from `firstKeptEntryId` onward.
 - Forward `/compact <focus>` by passing the trimmed focus text as Morph's `query` field, including when configured snapcompact would otherwise fall back to a native LLM summary.
 - Return `undefined` on missing Morph credentials, empty Morph summaries, and Morph API errors.
 - Re-throw abort-after-response failures so cancellation is not mistaken for a native-fallback case.
@@ -131,6 +133,8 @@ Tests should cover the remaining contract:
 - No `/morph-compact` command is registered.
 - No `auto_compaction_start` or `auto_compaction_end` route handlers are registered.
 - Failure cases still return `undefined`, while in-flight aborts and abort-after-response failures still reject.
+- A `remoteEnabled: false` preparation yields and does not call Morph.
+- `previousSummary` and split-turn `turnPrefixMessages` are included in the Morph input.
 
 ## Related
 

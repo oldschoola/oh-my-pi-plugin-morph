@@ -176,6 +176,13 @@ export function makeBeforeCompact(pi: ExtensionAPI) {
   ): Promise<SessionBeforeCompactResult | undefined> {
     if (!morphReady() || !compactClient) return undefined;
 
+    const prep = event.preparation;
+
+    // `/compact soft` (and any `remoteEnabled: false` config) forces a local
+    // summary and forbids transcript egress. Morph is a remote endpoint, so
+    // yield to the host's native local summarizer.
+    if (prep.settings.remoteEnabled === false) return undefined;
+
     // `/compact <focus>` carries focus instructions; forward them to Morph as
     // the compaction query rather than yielding to native. The host mirrors this:
     // configured snapcompact falls back to an LLM summary when focus is present.
@@ -183,15 +190,26 @@ export function makeBeforeCompact(pi: ExtensionAPI) {
 
     // snapcompact is a host-owned, non-LLM strategy (image archive). Yield when
     // no focus is present so the host keeps it; focused compactions use Morph.
-    if (!focus && event.preparation.settings.strategy === "snapcompact") return undefined;
+    if (!focus && prep.settings.strategy === "snapcompact") return undefined;
 
-    const msgs = event.preparation.messagesToSummarize;
-    if (msgs.length === 0) return undefined;
+    // The host applies a hook-provided summary verbatim and keeps only entries
+    // from firstKeptEntryId onward, so anything the native summarizer would fold
+    // in must be folded here too: the previous compaction's summary (iterative
+    // update) and, on a split turn, the turn-prefix messages.
+    const summarizable: MessageWithRole[] = [];
+    if (prep.previousSummary) {
+      summarizable.push({ role: "user", content: `[Summary of earlier history]\n${prep.previousSummary}` });
+    }
+    summarizable.push(...(prep.messagesToSummarize as MessageWithRole[]));
+    if (prep.isSplitTurn && prep.turnPrefixMessages.length > 0) {
+      summarizable.push(...(prep.turnPrefixMessages as MessageWithRole[]));
+    }
+    if (summarizable.length === 0) return undefined;
 
-    throwIfAborted(event.signal);
-    const input = serializeAgentMessagesForMorph(msgs as MessageWithRole[]);
+    const input = serializeAgentMessagesForMorph(summarizable);
     if (input.length === 0) return undefined;
 
+    throwIfAborted(event.signal);
     try {
       const result = await raceAbort(
         compactClient.compact({
@@ -213,8 +231,8 @@ export function makeBeforeCompact(pi: ExtensionAPI) {
 
       const compaction = {
         summary,
-        firstKeptEntryId: event.preparation.firstKeptEntryId,
-        tokensBefore: event.preparation.tokensBefore,
+        firstKeptEntryId: prep.firstKeptEntryId,
+        tokensBefore: prep.tokensBefore,
       };
       return { compaction };
     } catch (error) {

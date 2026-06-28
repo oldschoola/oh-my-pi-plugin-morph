@@ -16,6 +16,9 @@
 - Rule: Morph drives automatic and manual `/compact` compaction by default. It yields to an active `snapcompact` strategy when no focus text is present, and forwards `/compact <focus>` to Morph as a query. The bridge returns `undefined` for native-fallback cases — no key, empty history, empty serialized input, empty summary, or API error — so the host runs its native strategy; an abort after Morph responds re-throws instead of falling back.
 - Why: `snapcompact` remains a valid host image-archive strategy the plugin must not override for unfocused compaction. Focused compaction is a directed LLM summary path, so Morph receives the focus query.
 
+- Rule: The compaction bridge yields to native when `event.preparation.settings.remoteEnabled === false` (the `/compact soft` local-only path), and folds the inputs the native summarizer owns into the Morph request: `previousSummary` as a synthetic leading message and split-turn `turnPrefixMessages`.
+- Why: The host applies a hook-provided summary verbatim and keeps only entries from `firstKeptEntryId` onward, so a local-only request must not egress to Morph and previously summarized or split-turn-prefix history would otherwise be silently dropped.
+
 ## Extension lifecycle state
 
 - Rule: Session mutable state belongs inside `morphPlugin(pi)`, not module scope.

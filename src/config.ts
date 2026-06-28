@@ -15,7 +15,7 @@ export const GITHUB_REPO_SUGGESTION_LIMIT = 5;
 
 export const EXISTING_CODE_MARKER = "// ... existing code ...";
 export const MORPH_ROUTING_HINT_HEADER = "Morph plugin routing hints:";
-export const PLUGIN_VERSION = "0.3.0";
+export const PLUGIN_VERSION = "0.3.1";
 
 const parsedCompactRatio = Number.parseFloat(
   process.env.MORPH_COMPACT_RATIO || "0.3",

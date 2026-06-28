@@ -1,6 +1,6 @@
 {
   "name": "oh-my-pi-plugin-morph",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "oh-my-pi extension for Morph Fast Apply and WarpGrep tools",
   "type": "module",
   "omp": {

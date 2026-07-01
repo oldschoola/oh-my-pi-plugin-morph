@@ -1,3 +1,4 @@
+import type { ApplyEditResult } from "@morphllm/morphsdk";
 import type { Static } from "@oh-my-pi/pi-ai/types";
 import { unlink } from "node:fs/promises";
 import type {
@@ -8,8 +9,10 @@ import type {
   ToolDefinition,
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
 import { throwIfAborted, ToolAbortError } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
-import { MORPH_API_KEY, MORPH_API_URL } from "../config.js";
+import { raceAbort } from "../abort.js";
+import { MORPH_API_KEY, MORPH_API_URL, MORPH_TIMEOUT } from "../config.js";
 import { textToolResult } from "../compaction.js";
+import { nextMorphRetryDelay, transientMorphFailureMessage, waitForMorphRetry } from "../retry.js";
 import {
   detectCatastrophicTruncation,
   detectMarkerLeakage,
@@ -86,6 +89,7 @@ Get your API key at: https://morphllm.com/dashboard/api-keys
 
 Alternatively, use the native 'edit' tool for this change.`, true);
         }
+        const client = morph;
 
         let originalCode: string;
         try {
@@ -146,19 +150,55 @@ If you truly want to replace the entire file, use the 'write' tool instead.`, tr
 
         throwIfAborted(signal);
         const startTime = Date.now();
-        const result = await morph.fastApply.applyEdit(
-          {
-            originalCode,
-            codeEdit: normalizedCodeEdit,
-            instruction: instructions,
-            filepath: target_filepath,
-          },
-          {
-            morphApiUrl: MORPH_API_URL,
-            generateUdiff: true,
-          },
-        );
-        throwIfAborted(signal);
+        let attemptIndex = 0;
+        let result: ApplyEditResult;
+        for (;;) {
+          throwIfAborted(signal);
+          try {
+            result = await raceAbort(
+              client.fastApply.applyEdit(
+                {
+                  originalCode,
+                  codeEdit: normalizedCodeEdit,
+                  instruction: instructions,
+                  filepath: target_filepath,
+                },
+                {
+                  morphApiUrl: MORPH_API_URL,
+                  generateUdiff: true,
+                },
+              ),
+              signal,
+            );
+          } catch (error) {
+            const transientMessage = transientMorphFailureMessage(error);
+            if (transientMessage === undefined) throw error;
+            const delayMs = nextMorphRetryDelay(attemptIndex, startTime, MORPH_TIMEOUT);
+            if (delayMs === undefined) throw error;
+            pi.logger.warn(
+              `Morph fast_edit transient overload for ${target_filepath} on attempt ${attemptIndex + 1}; retrying in ${delayMs}ms: ${transientMessage}`,
+            );
+            await waitForMorphRetry(delayMs, signal);
+            throwIfAborted(signal);
+            attemptIndex++;
+            continue;
+          }
+          throwIfAborted(signal);
+
+          const transientMessage = transientMorphFailureMessage(result);
+          const delayMs =
+            transientMessage === undefined ? undefined : nextMorphRetryDelay(attemptIndex, startTime, MORPH_TIMEOUT);
+          if (delayMs !== undefined) {
+            pi.logger.warn(
+              `Morph fast_edit transient overload for ${target_filepath} on attempt ${attemptIndex + 1}; retrying in ${delayMs}ms: ${transientMessage}`,
+            );
+            await waitForMorphRetry(delayMs, signal);
+            throwIfAborted(signal);
+            attemptIndex++;
+            continue;
+          }
+          break;
+        }
         const apiDuration = Date.now() - startTime;
 
         if (!result.success || !result.mergedCode) {

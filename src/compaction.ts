@@ -7,9 +7,10 @@ import type {
   SessionBeforeCompactResult,
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
 import { throwIfAborted } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
-import { COMPACT_RATIO } from "./config.js";
+import { COMPACT_RATIO, MORPH_COMPACT_TIMEOUT } from "./config.js";
 import { compactClient, morphReady } from "./morph-clients.js";
 import { raceAbort } from "./abort.js";
+import { nextMorphRetryDelay, transientMorphFailureMessage, waitForMorphRetry } from "./retry.js";
 
 export function formatCompressionPercent(result: CompactResult): number {
   return Math.round(result.usage.compression_ratio * 100);
@@ -210,16 +211,36 @@ export function makeBeforeCompact(pi: ExtensionAPI) {
     if (input.length === 0) return undefined;
 
     throwIfAborted(event.signal);
+    const startTime = Date.now();
     try {
-      const result = await raceAbort(
-        compactClient.compact({
-          messages: input,
-          compressionRatio: COMPACT_RATIO,
-          preserveRecent: 0,
-          query: focus,
-        }),
-        event.signal,
-      );
+      let attemptIndex = 0;
+      let result: CompactResult;
+      for (;;) {
+        throwIfAborted(event.signal);
+        try {
+          result = await raceAbort(
+            compactClient.compact({
+              messages: input,
+              compressionRatio: COMPACT_RATIO,
+              preserveRecent: 0,
+              query: focus,
+            }),
+            event.signal,
+          );
+        } catch (error) {
+          const transientMessage = transientMorphFailureMessage(error);
+          if (transientMessage === undefined) throw error;
+          const delayMs = nextMorphRetryDelay(attemptIndex, startTime, MORPH_COMPACT_TIMEOUT);
+          if (delayMs === undefined) throw error;
+          pi.logger.warn(
+            `Morph compaction transient overload on attempt ${attemptIndex + 1}; retrying in ${delayMs}ms: ${transientMessage}`,
+          );
+          await waitForMorphRetry(delayMs, event.signal);
+          attemptIndex++;
+          continue;
+        }
+        break;
+      }
       throwIfAborted(event.signal);
 
       const summary = compactResultText(result);

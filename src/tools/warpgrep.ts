@@ -21,55 +21,7 @@ import { formatWarpGrepResult } from "../format.js";
 import { warpGrep } from "../morph-clients.js";
 import { withToolNote } from "../routing.js";
 import { raceAbort } from "../abort.js";
-
-const WARPGREP_TRANSIENT_RETRY_DELAYS_MS = [250, 500, 1_000] as const;
-const WARPGREP_TRANSIENT_ERROR_RE = /\b429\b|service overloaded|please retry shortly/i;
-
-// Returns the transient-overload message text if `value` represents a transient
-// WarpGrep overload failure — either a thrown Error whose message matches
-// WARPGREP_TRANSIENT_ERROR_RE, or a WarpGrepResult with `success === false` and a
-// string `error` matching the same pattern. Returns undefined for successful
-// results, non-object/non-Error values, missing error text, or non-transient
-// failures (so callers never retry on unrelated failures).
-function transientWarpGrepFailureMessage(value: unknown): string | undefined {
-  if (value instanceof Error) {
-    return WARPGREP_TRANSIENT_ERROR_RE.test(value.message) ? value.message : undefined;
-  }
-  if (value && typeof value === "object" && "success" in value && value.success === false && "error" in value) {
-    const error = value.error;
-    if (typeof error === "string" && WARPGREP_TRANSIENT_ERROR_RE.test(error)) {
-      return error;
-    }
-  }
-  return undefined;
-}
-
-// Returns the delay (ms) to wait before the next retry attempt, indexed by the
-// zero-based FAILED attempt (0 = first failure, so the first retry uses
-// WARPGREP_TRANSIENT_RETRY_DELAYS_MS[0]). Returns undefined once the retry
-// budget (array length) is exhausted, or once scheduling the delay would push
-// past the WarpGrep timeout budget measured from `startedAt`.
-function nextWarpGrepRetryDelay(attemptIndex: number, startedAt: number): number | undefined {
-  const delayMs = WARPGREP_TRANSIENT_RETRY_DELAYS_MS[attemptIndex];
-  if (delayMs === undefined) return undefined;
-  if (Date.now() - startedAt + delayMs > MORPH_WARP_GREP_TIMEOUT) return undefined;
-  return delayMs;
-}
-
-// Sleeps for delayMs, rejecting immediately if `signal` aborts during the wait
-// (via raceAbort), and always clearing the underlying timer.
-async function waitForWarpGrepRetry(delayMs: number, signal: AbortSignal | undefined): Promise<void> {
-  let clearTimer: (() => void) | undefined;
-  const sleep = new Promise<void>((resolve) => {
-    const timer = setTimeout(resolve, delayMs);
-    clearTimer = () => clearTimeout(timer);
-  });
-  try {
-    await raceAbort(sleep, signal);
-  } finally {
-    clearTimer?.();
-  }
-}
+import { nextMorphRetryDelay, transientMorphFailureMessage, waitForMorphRetry } from "../retry.js";
 
 const CODEBASE_DESCRIPTION = `Fast agentic codebase search. Uses ripgrep, file reading, and directory listing across multiple turns to find relevant code contexts.
 
@@ -157,27 +109,27 @@ Get your API key at: https://morphllm.com/dashboard/api-keys`);
           try {
             attempt = await runAttempt();
           } catch (error) {
-            const transientMessage = transientWarpGrepFailureMessage(error);
+            const transientMessage = transientMorphFailureMessage(error);
             if (transientMessage === undefined) throw error;
-            const delayMs = nextWarpGrepRetryDelay(attemptIndex, startTime);
+            const delayMs = nextMorphRetryDelay(attemptIndex, startTime, MORPH_WARP_GREP_TIMEOUT);
             if (delayMs === undefined) throw error;
             pi.logger.warn(
               `WarpGrep transient overload on attempt ${attemptIndex + 1}; retrying in ${delayMs}ms: ${transientMessage}`,
             );
-            await waitForWarpGrepRetry(delayMs, signal);
+            await waitForMorphRetry(delayMs, signal);
             attemptIndex++;
             continue;
           }
 
           const { result, turnCount } = attempt;
-          const transientMessage = transientWarpGrepFailureMessage(result);
+          const transientMessage = transientMorphFailureMessage(result);
           const delayMs =
-            transientMessage === undefined ? undefined : nextWarpGrepRetryDelay(attemptIndex, startTime);
+            transientMessage === undefined ? undefined : nextMorphRetryDelay(attemptIndex, startTime, MORPH_WARP_GREP_TIMEOUT);
           if (delayMs !== undefined) {
             pi.logger.warn(
               `WarpGrep transient overload on attempt ${attemptIndex + 1}; retrying in ${delayMs}ms: ${transientMessage}`,
             );
-            await waitForWarpGrepRetry(delayMs, signal);
+            await waitForMorphRetry(delayMs, signal);
             attemptIndex++;
             continue;
           }
@@ -305,27 +257,27 @@ Get your API key at: https://morphllm.com/dashboard/api-keys`);
               signal,
             );
           } catch (error) {
-            const transientMessage = transientWarpGrepFailureMessage(error);
+            const transientMessage = transientMorphFailureMessage(error);
             if (transientMessage === undefined) throw error;
-            const delayMs = nextWarpGrepRetryDelay(attemptIndex, startTime);
+            const delayMs = nextMorphRetryDelay(attemptIndex, startTime, MORPH_WARP_GREP_TIMEOUT);
             if (delayMs === undefined) throw error;
             pi.logger.warn(
               `Public repo WarpGrep transient overload for ${repo} on attempt ${attemptIndex + 1}; retrying in ${delayMs}ms: ${transientMessage}`,
             );
-            await waitForWarpGrepRetry(delayMs, signal);
+            await waitForMorphRetry(delayMs, signal);
             attemptIndex++;
             continue;
           }
           throwIfAborted(signal);
 
-          const transientMessage = transientWarpGrepFailureMessage(result);
+          const transientMessage = transientMorphFailureMessage(result);
           const delayMs =
-            transientMessage === undefined ? undefined : nextWarpGrepRetryDelay(attemptIndex, startTime);
+            transientMessage === undefined ? undefined : nextMorphRetryDelay(attemptIndex, startTime, MORPH_WARP_GREP_TIMEOUT);
           if (delayMs !== undefined) {
             pi.logger.warn(
               `Public repo WarpGrep transient overload for ${repo} on attempt ${attemptIndex + 1}; retrying in ${delayMs}ms: ${transientMessage}`,
             );
-            await waitForWarpGrepRetry(delayMs, signal);
+            await waitForMorphRetry(delayMs, signal);
             attemptIndex++;
             continue;
           }

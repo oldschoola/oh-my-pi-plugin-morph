@@ -8,6 +8,7 @@ import type {
   ExtensionContext,
   ToolDefinition,
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
+import type { CompactResult } from "@morphllm/morphsdk";
 import { throwIfAborted, ToolAbortError } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
 import {
   COMPACT_RATIO,
@@ -15,12 +16,14 @@ import {
   FASTCOMPACT_MAX_LOCATIONS,
   FASTCOMPACT_MAX_QUERY_BYTES,
   MORPH_API_KEY,
+  MORPH_COMPACT_TIMEOUT,
 } from "../config.js";
 import { compactResultText, textToolResult } from "../compaction.js";
 import { resolveFilepath } from "../format.js";
 import { compactClient } from "../morph-clients.js";
 import { withToolNote } from "../routing.js";
 import { raceAbort } from "../abort.js";
+import { nextMorphRetryDelay, transientMorphFailureMessage, waitForMorphRetry } from "../retry.js";
 
 const ARTIFACT_PREFIX = "artifact://";
 
@@ -239,20 +242,39 @@ Alternatively, read the location with the native 'read' tool.`, true);
         }
 
         const sections: string[] = [];
+        const startTime = Date.now();
         for (const text of resolved) {
-          throwIfAborted(signal);
-          // Race the in-flight Morph call against the abort signal so a cancel
-          // mid-request rejects immediately instead of blocking on the remote
-          // round-trip; raceAbort also drains the abandoned promise's rejection.
-          const result = await raceAbort(
-            client.compact({
-              input: text,
-              query,
-              compressionRatio,
-              preserveRecent: 0,
-            }),
-            signal,
-          );
+          let attemptIndex = 0;
+          let result: CompactResult;
+          for (;;) {
+            throwIfAborted(signal);
+            try {
+              // Race the in-flight Morph call against the abort signal so a cancel
+              // mid-request rejects immediately instead of blocking on the remote
+              // round-trip; raceAbort also drains the abandoned promise's rejection.
+              result = await raceAbort(
+                client.compact({
+                  input: text,
+                  query,
+                  compressionRatio,
+                  preserveRecent: 0,
+                }),
+                signal,
+              );
+            } catch (error) {
+              const transientMessage = transientMorphFailureMessage(error);
+              if (transientMessage === undefined) throw error;
+              const delayMs = nextMorphRetryDelay(attemptIndex, startTime, MORPH_COMPACT_TIMEOUT);
+              if (delayMs === undefined) throw error;
+              pi.logger.warn(
+                `fastcompact transient overload on attempt ${attemptIndex + 1}; retrying in ${delayMs}ms: ${transientMessage}`,
+              );
+              await waitForMorphRetry(delayMs, signal);
+              attemptIndex++;
+              continue;
+            }
+            break;
+          }
           throwIfAborted(signal);
           sections.push(compactResultText(result));
         }

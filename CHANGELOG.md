@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-07-01
+
+### Added
+
+- Extended bounded transient-overload retry (previously WarpGrep-only) to `fast_edit`, `fastcompact`, and Morph session compaction: each surface now retries a 429/rate-limited/service-overloaded Morph failure up to 3 times (250ms/500ms/1s backoff, bounded by the surface's existing timeout) before surfacing the original failure through its existing error path.
+- Added `src/retry.ts`, centralizing the transient-failure classifier and backoff helpers previously private to `src/tools/warpgrep.ts`; WarpGrep now consumes the shared module, whose classifier also gained the `rate limited` match described below.
+
+### Fixed
+
+- Widened the transient-failure classifier to match the Morph Fast Apply SDK's actual rate-limit message text (`"Rate limited: You've exceeded your Morph API usage limits..."`), which contains no `429` substring; `fast_edit`'s retry previously never fired for real rate limiting.
+- Wrapped `fast_edit`'s Morph Fast Apply call in the same abort-race used by the other three Morph call sites, so a cancelled `fast_edit` request rejects promptly instead of blocking until the (now-retrying) remote call settles.
+
 ## [0.3.2] - 2026-07-01
 
 ### Fixed

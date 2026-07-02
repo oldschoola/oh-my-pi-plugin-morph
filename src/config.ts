@@ -18,12 +18,12 @@ export const MORPH_ROUTING_HINT_HEADER = "Morph plugin routing hints:";
 export const PLUGIN_VERSION = "0.3.4";
 
 const parsedCompactRatio = Number.parseFloat(
-  process.env.MORPH_COMPACT_RATIO || "0.3",
+  process.env.MORPH_COMPACT_RATIO || "0.2",
 );
 export const COMPACT_RATIO =
   Number.isFinite(parsedCompactRatio) && parsedCompactRatio >= 0.05 && parsedCompactRatio <= 1
     ? parsedCompactRatio
-    : 0.3;
+    : 0.2;
 
 export const MORPH_EDIT_ENABLED = process.env.MORPH_EDIT !== "false";
 export const MORPH_WARPGREP_ENABLED = process.env.MORPH_WARPGREP !== "false";

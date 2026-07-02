@@ -54,7 +54,7 @@ All configuration is via environment variables.
 | `MORPH_COMPACT` | `true` | Set `false` to disable the compaction hook. |
 | `MORPH_FASTCOMPACT` | `true` | Set `false` to disable the `fastcompact` tool. |
 | `MORPH_ROUTING_HINT` | `true` | Set `false` to skip per-turn tool-selection system hints. |
-| `MORPH_COMPACT_RATIO` | `0.3` | Target fraction to keep for Morph compaction. Valid range: `0.05` to `1`. |
+| `MORPH_COMPACT_RATIO` | `0.2` | Target fraction to keep for Morph compaction. Valid range: `0.05` to `1`. |
 
 ## Tools
 

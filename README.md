@@ -20,6 +20,12 @@ Get a key at <https://morphllm.com/dashboard/api-keys>.
 
 ### 2. Install or link the plugin
 
+Installed npm/git specs use omp's plugin installer [Recommended]:
+
+```bash
+omp plugin install https://github.com/metaphorics/oh-my-pi-plugin-morph
+```
+
 For local development from this checkout:
 
 ```bash
@@ -30,12 +36,6 @@ For a one-off smoke test without installing:
 
 ```bash
 MORPH_API_KEY=sk-... omp -e ./src/index.ts -p "List the Morph tools you can call."
-```
-
-Installed npm/git specs use omp's plugin installer:
-
-```bash
-omp plugin install https://github.com/metaphorics/oh-my-pi-plugin-morph
 ```
 
 The package manifest loads the extension from `omp.extensions: ["./src/index.ts"]`.

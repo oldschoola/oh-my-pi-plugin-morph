@@ -172,6 +172,7 @@ If you truly want to replace the entire file, use the 'write' tool instead.`, tr
                   model: MORPH_FAST_EDIT_MODEL,
                   generateUdiff: true,
                 },
+                signal,
               ),
               signal,
             );
@@ -308,6 +309,7 @@ async function applyMorphFastEdit(
   client: NonNullable<typeof morph>,
   input: ApplyEditInput,
   config: FastApplyConfig,
+  signal?: AbortSignal,
 ): Promise<ApplyEditResult> {
   if (config.model !== "auto") {
     return client.fastApply.applyEdit(input, {
@@ -317,12 +319,13 @@ async function applyMorphFastEdit(
     });
   }
 
-  return applyMorphFastEditViaApi(input, config);
+  return applyMorphFastEditViaApi(input, config, signal);
 }
 
 async function applyMorphFastEditViaApi(
   input: ApplyEditInput,
   config: FastApplyConfig,
+  signal?: AbortSignal,
 ): Promise<ApplyEditResult> {
   const filepath = input.filepath || "file";
   const instruction = input.instruction ?? input.instructions ?? "";
@@ -334,6 +337,7 @@ async function applyMorphFastEditViaApi(
       instruction,
       filepath,
       config,
+      signal,
     );
     return {
       success: true,
@@ -359,9 +363,15 @@ async function callMorphApplyApi(
   instruction: string,
   filepath: string,
   config: FastApplyConfig,
+  signal?: AbortSignal,
 ): Promise<{ content: string; completionId?: string }> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), MORPH_TIMEOUT);
+  // Link the caller's cancellation so aborting the tool stops the in-flight
+  // HTTP request, not just the JS-level wait (raceAbort) wrapping it.
+  const onAbort = () => controller.abort();
+  if (signal?.aborted) controller.abort();
+  else signal?.addEventListener("abort", onAbort);
   const message = `<instruction>${instruction}</instruction>
 <code>${originalCode}</code>
 <update>${codeEdit}</update>`;
@@ -397,10 +407,13 @@ async function callMorphApplyApi(
     return { content, completionId: data.id };
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
+      // Caller cancelled -> propagate the abort; otherwise it was our timeout.
+      if (signal?.aborted) throw error;
       throw new Error(`Morph API request timed out after ${MORPH_TIMEOUT}ms`);
     }
     throw error;
   } finally {
     clearTimeout(timeout);
+    signal?.removeEventListener("abort", onAbort);
   }
 }

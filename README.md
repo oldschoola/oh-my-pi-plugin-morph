@@ -106,7 +106,7 @@ This extension hooks omp's `session_before_compact` event. Morph Compact handles
 - For non-snapcompact strategies and focused compactions, Morph compacts the selected history and returns the hook result to omp.
 - `/compact <focus text>` forwards the focus text to Morph as the compaction query.
 
-When Morph runs, the serialized selected history and any focus text are sent to Morph's API. Leave `MORPH_API_KEY` unset, set `MORPH_COMPACT=false`, or use unfocused `snapcompact` when transcript egress is not acceptable.
+When Morph runs, the serialized selected history and any focus text are sent to Morph's API. Leave `MORPH_API_KEY` unset, disable the compaction hook (`compactEnabled` setting or `MORPH_COMPACT=false`), or use unfocused `snapcompact` when transcript egress is not acceptable.
 
 If Morph is unavailable, the selected history is empty, serialization produces no input, Morph returns an empty summary, or the API errors, the handler returns `undefined` so omp runs its configured native strategy.
 
@@ -114,7 +114,7 @@ If Morph is unavailable, the selected history is empty, serialization produces n
 
 ## Routing hint
 
-By default the extension appends a concise tool-selection policy through `before_agent_start`. With `MORPH_API_KEY` configured, the policy leads with a Morph-first preference (favor Morph-backed tools over native equivalents when a task fits one). Without a key, it tells the agent Morph tools are unavailable and to use native edit/write/search instead. Set `MORPH_ROUTING_HINT=false` to disable it. Tool descriptions also include runtime notes, including missing-key guidance.
+By default the extension appends a concise tool-selection policy through `before_agent_start`. With `MORPH_API_KEY` configured, the policy leads with a Morph-first preference (favor Morph-backed tools over native equivalents when a task fits one). Without a key, it tells the agent Morph tools are unavailable and to use native edit/write/search instead. Disable it with the `routingHintEnabled` setting or `MORPH_ROUTING_HINT=false`. Tool descriptions also include runtime notes, including missing-key guidance.
 
 ## Agent access
 

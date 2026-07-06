@@ -114,6 +114,10 @@ function morphResult(output: string): CompactResult {
 async function findRegisteredTool(name: string): Promise<ToolDefinition> {
   const { pi, tools } = fakePi();
   await morphPlugin(pi);
+  // morphPlugin re-reads the real lockfile and applies its editModel (e.g. "auto"),
+  // overriding per-test model pins set via setApplyEdit (process.env.MORPH_EDIT_MODEL).
+  // Restore the model from env so SDK-path tests reach their stubbed applyEdit.
+  setMorphFastEditModel(process.env.MORPH_EDIT_MODEL);
   const tool = tools.find((entry) => entry.name === name);
   if (!tool) throw new Error(`tool not registered: ${name}`);
   return tool;
@@ -1333,6 +1337,104 @@ describe("fast_edit execute", () => {
       controller.abort();
       await expect(pending).rejects.toThrow();
       expect(readFileSync(join(dir, "hang.ts"), "utf8")).toBe(original);
+    });
+  });
+  test("auto/fetch path links the caller abort to the in-flight HTTP request", async () => {
+    // Regression test for the editModel: auto path: aborting the tool must
+    // cancel the real fetch (its request signal aborts), not just short-circuit
+    // the JS-level raceAbort wait. Otherwise the request keeps running until its
+    // own timeout fires, wasting Morph quota after the user already cancelled.
+    setMorphApiKey("sk-test");
+    process.env.MORPH_EDIT_MODEL = "auto";
+    setMorphFastEditModel("auto");
+    initMorphClients();
+    const { promise: fetchCalled, resolve: markFetchCalled } = Promise.withResolvers<void>();
+    let fetchSignal: AbortSignal | undefined;
+    const controller = new AbortController();
+    await withTempDir(async (dir) => {
+      const original = "export const x = 1;\nexport const y = 1;\n";
+      writeFileSync(join(dir, "hang-auto.ts"), original);
+      await withFetch(
+        async (_url: string, init: { signal?: AbortSignal }) => {
+          fetchSignal = init.signal;
+          markFetchCalled();
+          // Mimic real fetch: stay pending until the request signal aborts.
+          return new Promise<Response>((_, reject) => {
+            init.signal?.addEventListener("abort", () => {
+              const err = new Error("The operation was aborted");
+              err.name = "AbortError";
+              reject(err);
+            });
+          });
+        },
+        async () => {
+          const pending = runTool(
+            "fast_edit",
+            {
+              target_filepath: "hang-auto.ts",
+              instructions: "bump",
+              code_edit: `${EXISTING_CODE_MARKER}\nexport const x = 2;\n${EXISTING_CODE_MARKER}`,
+            },
+            { cwd: dir },
+            undefined,
+            controller.signal,
+          );
+          pending.catch(() => {});
+          await fetchCalled;
+          expect(fetchSignal?.aborted).toBe(false);
+          controller.abort();
+          // The caller abort propagated to the fetch's request signal via the
+          // linked controller — the real HTTP request is cancelled, not ignored.
+          expect(fetchSignal?.aborted).toBe(true);
+          await expect(pending).rejects.toThrow();
+          expect(readFileSync(join(dir, "hang-auto.ts"), "utf8")).toBe(original);
+        },
+      );
+    });
+  });
+
+  test("retries a 503 response on the auto/fetch path and applies the successful retry", async () => {
+    setMorphApiKey("sk-test");
+    process.env.MORPH_EDIT_MODEL = "auto";
+    setMorphFastEditModel("auto");
+    initMorphClients();
+    const merged = "export const x = 2;\nexport const y = 1;\n";
+    let calls = 0;
+    await withTempDir(async (dir) => {
+      writeFileSync(join(dir, "retry-503.ts"), "export const x = 1;\nexport const y = 1;\n");
+      await withFetch(
+        async () => {
+          calls++;
+          if (calls === 1) {
+            return {
+              ok: false,
+              status: 503,
+              statusText: "Service Unavailable",
+              text: async () => "backend overloaded",
+            };
+          }
+          return {
+            ok: true,
+            status: 200,
+            text: async () =>
+              JSON.stringify({ choices: [{ message: { content: merged } }] }),
+          };
+        },
+        async () => {
+          const result = await runTool(
+            "fast_edit",
+            {
+              target_filepath: "retry-503.ts",
+              instructions: "bump",
+              code_edit: `${EXISTING_CODE_MARKER}\nexport const x = 2;\n${EXISTING_CODE_MARKER}`,
+            },
+            { cwd: dir },
+          );
+          expect(calls).toBe(2);
+          expect(result.isError).toBeFalsy();
+          expect(readFileSync(join(dir, "retry-503.ts"), "utf8")).toBe(merged);
+        },
+      );
     });
   });
   test("retries a thrown transient overload and applies the successful retry", async () => {

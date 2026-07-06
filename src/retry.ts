@@ -3,7 +3,7 @@ import { raceAbort } from "./abort.js";
 export type TransientFailureMessage = string | undefined;
 
 const MORPH_TRANSIENT_RETRY_DELAYS_MS = [250, 500, 1_000] as const;
-const MORPH_TRANSIENT_ERROR_RE = /\b429\b|service overloaded|please retry shortly|rate limited/i;
+const MORPH_TRANSIENT_ERROR_RE = /\b429\b|\b50[234]\b|service overloaded|please retry shortly|rate limited/i;
 
 // Returns the transient-overload message text if `value` represents a transient
 // Morph overload failure — either a thrown Error whose message matches

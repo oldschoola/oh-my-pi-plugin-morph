@@ -13,6 +13,7 @@ import {
   MORPH_WARPGREP_GITHUB_ENABLED,
   PLUGIN_PACKAGE_NAME,
 } from "./config.js";
+import { initMorphClients, morphReady } from "./morph-clients.js";
 import { makeBeforeCompact } from "./compaction.js";
 import { buildMorphSystemRoutingHint } from "./routing.js";
 import { makeFastCompact } from "./tools/fastcompact.js";
@@ -20,7 +21,16 @@ import { makeMorphEdit } from "./tools/morph-edit.js";
 import { makeWarpgrepCodebase, makeWarpgrepGithub } from "./tools/warpgrep.js";
 
 export default async function morphPlugin(pi: ExtensionAPI): Promise<void> {
-  applyMorphSettings(await readMorphPluginSettings());
+  const settings = await readMorphPluginSettings();
+  applyMorphSettings(settings);
+  // initMorphClients() ran at import with the env key. If the key came from
+  // settings instead — leaving clients null — initialize now. Gating on the
+  // settings apiKey (not the env-resolved MORPH_API_KEY) avoids creating
+  // clients when an env key merely leaks into the resolved value.
+  const settingsApiKey = settings.apiKey;
+  if (typeof settingsApiKey === "string" && settingsApiKey.length > 0 && !morphReady()) {
+    initMorphClients();
+  }
   const morphEditTool: ToolDefinition = makeMorphEdit(pi);
   const warpgrepCodebaseTool: ToolDefinition = makeWarpgrepCodebase(pi);
   const warpgrepGithubTool: ToolDefinition = makeWarpgrepGithub(pi);

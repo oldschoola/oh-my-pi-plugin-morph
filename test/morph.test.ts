@@ -342,6 +342,32 @@ describe("config", () => {
       setMorphApiKey(undefined);
     }
   });
+
+  test("a settings-sourced apiKey leaves clients null until initMorphClients runs", () => {
+    // Regression guard for the morphPlugin flow: applyMorphSettings resolves the
+    // key, but the SDK clients are only created by initMorphClients (which ran
+    // at import with the env key). morphPlugin re-inits after applying settings
+    // so a settings-only apiKey still produces ready clients.
+    const savedKey = process.env.MORPH_API_KEY;
+    delete process.env.MORPH_API_KEY;
+    try {
+      setMorphApiKey(undefined);
+      initMorphClients();
+      expect(morph).toBeNull();
+
+      applyMorphSettings({ apiKey: "sk-from-settings" });
+      expect(morph).toBeNull();
+
+      initMorphClients();
+      expect(morph).not.toBeNull();
+      expect(warpGrep).not.toBeNull();
+      expect(compactClient).not.toBeNull();
+    } finally {
+      if (savedKey !== undefined) process.env.MORPH_API_KEY = savedKey;
+      setMorphApiKey(undefined);
+      initMorphClients();
+    }
+  });
 });
 
 describe("format helpers", () => {

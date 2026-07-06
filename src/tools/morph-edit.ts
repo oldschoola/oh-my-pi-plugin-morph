@@ -312,6 +312,9 @@ async function applyMorphFastEdit(
   signal?: AbortSignal,
 ): Promise<ApplyEditResult> {
   if (config.model !== "auto") {
+    // Morph SDK 0.2.x applyEdit has no AbortSignal option, so the caller's
+    // signal can't cancel this request — only the raceAbort wrapper at the
+    // call site stops the caller's wait. Revisit when the SDK exposes signal.
     return client.fastApply.applyEdit(input, {
       morphApiUrl: config.morphApiUrl,
       generateUdiff: config.generateUdiff,

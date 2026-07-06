@@ -1,3 +1,5 @@
+export const PLUGIN_PACKAGE_NAME = "oh-my-pi-plugin-morph";
+
 export let MORPH_API_KEY = process.env.MORPH_API_KEY;
 
 export function setMorphApiKey(apiKey: string | undefined): void {
@@ -15,24 +17,92 @@ export const GITHUB_REPO_SUGGESTION_LIMIT = 5;
 
 export const EXISTING_CODE_MARKER = "// ... existing code ...";
 export const MORPH_ROUTING_HINT_HEADER = "Morph plugin routing hints:";
-export const PLUGIN_VERSION = "0.3.4";
+export const PLUGIN_VERSION = "0.3.5";
 
-const parsedCompactRatio = Number.parseFloat(
-  process.env.MORPH_COMPACT_RATIO || "0.2",
+export let COMPACT_RATIO = compactRatioFrom(process.env.MORPH_COMPACT_RATIO);
+
+export let MORPH_EDIT_ENABLED = booleanFrom(process.env.MORPH_EDIT, true);
+export let MORPH_WARPGREP_ENABLED = booleanFrom(process.env.MORPH_WARPGREP, false);
+export let MORPH_WARPGREP_GITHUB_ENABLED = booleanFrom(
+  process.env.MORPH_WARPGREP_GITHUB,
+  false,
 );
-export const COMPACT_RATIO =
-  Number.isFinite(parsedCompactRatio) && parsedCompactRatio >= 0.05 && parsedCompactRatio <= 1
-    ? parsedCompactRatio
-    : 0.2;
+export let MORPH_COMPACT_ENABLED = booleanFrom(process.env.MORPH_COMPACT, true);
+export let MORPH_FASTCOMPACT_ENABLED = booleanFrom(process.env.MORPH_FASTCOMPACT, true);
+export let MORPH_ROUTING_HINT_ENABLED = booleanFrom(
+  process.env.MORPH_ROUTING_HINT,
+  true,
+);
 
-export const MORPH_EDIT_ENABLED = process.env.MORPH_EDIT !== "false";
-export const MORPH_WARPGREP_ENABLED = process.env.MORPH_WARPGREP !== "false";
-export const MORPH_WARPGREP_GITHUB_ENABLED =
-  process.env.MORPH_WARPGREP_GITHUB !== "false";
-export const MORPH_COMPACT_ENABLED = process.env.MORPH_COMPACT !== "false";
-export const MORPH_FASTCOMPACT_ENABLED = process.env.MORPH_FASTCOMPACT !== "false";
-export const MORPH_ROUTING_HINT_ENABLED =
-  process.env.MORPH_ROUTING_HINT !== "false";
+export function applyMorphSettings(settings: Record<string, unknown> = {}): void {
+  const apiKey = stringSetting(settings, "apiKey");
+  MORPH_API_KEY = apiKey ?? process.env.MORPH_API_KEY;
+  COMPACT_RATIO = compactRatioFrom(
+    numberSetting(settings, "compactRatio") ?? process.env.MORPH_COMPACT_RATIO,
+  );
+  MORPH_EDIT_ENABLED = booleanSetting(settings, "editEnabled", "MORPH_EDIT", true);
+  MORPH_WARPGREP_ENABLED = booleanSetting(
+    settings,
+    "warpgrepEnabled",
+    "MORPH_WARPGREP",
+    false,
+  );
+  MORPH_WARPGREP_GITHUB_ENABLED = booleanSetting(
+    settings,
+    "warpgrepGithubEnabled",
+    "MORPH_WARPGREP_GITHUB",
+    false,
+  );
+  MORPH_COMPACT_ENABLED = booleanSetting(settings, "compactEnabled", "MORPH_COMPACT", true);
+  MORPH_FASTCOMPACT_ENABLED = booleanSetting(
+    settings,
+    "fastcompactEnabled",
+    "MORPH_FASTCOMPACT",
+    true,
+  );
+  MORPH_ROUTING_HINT_ENABLED = booleanSetting(
+    settings,
+    "routingHintEnabled",
+    "MORPH_ROUTING_HINT",
+    true,
+  );
+}
+
+function stringSetting(settings: Record<string, unknown>, key: string): string | undefined {
+  const value = settings[key];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function numberSetting(settings: Record<string, unknown>, key: string): number | undefined {
+  const value = settings[key];
+  return typeof value === "number" ? value : undefined;
+}
+
+function booleanSetting(
+  settings: Record<string, unknown>,
+  key: string,
+  envName: string,
+  defaultValue: boolean,
+): boolean {
+  const value = settings[key];
+  return typeof value === "boolean"
+    ? value
+    : booleanFrom(process.env[envName], defaultValue);
+}
+
+function booleanFrom(value: string | undefined, defaultValue: boolean): boolean {
+  if (value === undefined) return defaultValue;
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  return defaultValue;
+}
+
+function compactRatioFrom(value: string | number | undefined): number {
+  const parsed =
+    typeof value === "number" ? value : Number.parseFloat(value || "0.2");
+  return Number.isFinite(parsed) && parsed >= 0.05 && parsed <= 1 ? parsed : 0.2;
+}
 
 // Upper bound on the bytes of a single resolved fastcompact input (file or
 // artifact) checked before any Morph API call, and the maximum number of

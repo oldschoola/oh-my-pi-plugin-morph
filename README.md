@@ -43,18 +43,25 @@ Marketplace installs do not load manifest extension modules; use `omp plugin ins
 
 ## Configuration
 
-All configuration is via environment variables.
+Configuration is editable through OMP plugin settings. The same environment
+variables are still supported as fallbacks for scriptable setups.
 
-| Variable | Default | Description |
-|---|---:|---|
-| `MORPH_API_KEY` | required | Morph API key. Tools stay registered without it, but return setup guidance. |
-| `MORPH_EDIT` | `true` | Set `false` to disable `fast_edit`. |
-| `MORPH_WARPGREP` | `true` | Set `false` to disable local WarpGrep. |
-| `MORPH_WARPGREP_GITHUB` | `true` | Set `false` to disable public GitHub search. |
-| `MORPH_COMPACT` | `true` | Set `false` to disable the compaction hook. |
-| `MORPH_FASTCOMPACT` | `true` | Set `false` to disable the `fastcompact` tool. |
-| `MORPH_ROUTING_HINT` | `true` | Set `false` to skip per-turn tool-selection system hints. |
-| `MORPH_COMPACT_RATIO` | `0.2` | Target fraction to keep for Morph compaction. Valid range: `0.05` to `1`. |
+```bash
+omp plugin config list oh-my-pi-plugin-morph
+omp plugin config set oh-my-pi-plugin-morph warpgrepEnabled true
+omp plugin config set oh-my-pi-plugin-morph warpgrepGithubEnabled true
+```
+
+| Setting | Environment fallback | Default | Description |
+|---|---|---:|---|
+| `apiKey` | `MORPH_API_KEY` | required | Morph API key. Tools stay registered without it, but return setup guidance. |
+| `editEnabled` | `MORPH_EDIT` | `true` | Set `false` to disable `fast_edit`. |
+| `warpgrepEnabled` | `MORPH_WARPGREP` | `false` | Set `true` to enable local WarpGrep. |
+| `warpgrepGithubEnabled` | `MORPH_WARPGREP_GITHUB` | `false` | Set `true` to enable public GitHub search. |
+| `compactEnabled` | `MORPH_COMPACT` | `true` | Set `false` to disable the compaction hook. |
+| `fastcompactEnabled` | `MORPH_FASTCOMPACT` | `true` | Set `false` to disable the `fastcompact` tool. |
+| `routingHintEnabled` | `MORPH_ROUTING_HINT` | `true` | Set `false` to skip per-turn tool-selection system hints. |
+| `compactRatio` | `MORPH_COMPACT_RATIO` | `0.2` | Target fraction to keep for Morph compaction. Valid range: `0.05` to `1`. |
 
 ## Tools
 

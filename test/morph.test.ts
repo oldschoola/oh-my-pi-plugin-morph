@@ -111,9 +111,9 @@ function morphResult(output: string): CompactResult {
   };
 }
 
-function findRegisteredTool(name: string): ToolDefinition {
+async function findRegisteredTool(name: string): Promise<ToolDefinition> {
   const { pi, tools } = fakePi();
-  morphPlugin(pi);
+  await morphPlugin(pi);
   const tool = tools.find((entry) => entry.name === name);
   if (!tool) throw new Error(`tool not registered: ${name}`);
   return tool;
@@ -126,7 +126,7 @@ async function runTool(
   onUpdate?: (update: AgentToolResult) => void,
   signal?: AbortSignal,
 ): Promise<AgentToolResult> {
-  const execute = findRegisteredTool(name).execute as unknown as (
+  const execute = (await findRegisteredTool(name)).execute as unknown as (
     ...args: unknown[]
   ) => Promise<AgentToolResult>;
   return execute("call-id", params, signal, onUpdate, ctx);
@@ -172,7 +172,10 @@ async function withFetch(stub: unknown, fn: () => Promise<void>): Promise<void> 
   }
 }
 
-function pluginRegistrationsWithEnv(overrides: Record<string, string>): {
+function pluginRegistrationsWithEnv(
+  overrides: Record<string, string>,
+  includeBaseline = true,
+): {
   tools: string[];
   handlers: string[];
   commands: string[];
@@ -182,7 +185,7 @@ function pluginRegistrationsWithEnv(overrides: Record<string, string>): {
     "const tools = []; const handlers = {}; const commands = {};",
     "const pi = { zod: z, logger: { debug() {}, info() {}, warn() {}, error() {} }, registerTool(t) { tools.push(t.name); }, on(e) { (handlers[e] ??= []).push(1); }, registerCommand(n) { commands[n] = 1; } };",
     'const mod = await import("./src/index.ts");',
-    "mod.default(pi);",
+    "await mod.default(pi);",
     "process.stdout.write(JSON.stringify({ tools: tools.sort(), handlers: Object.keys(handlers).sort(), commands: Object.keys(commands).sort() }));",
   ].join("\n");
   const baseline: Record<string, string> = {
@@ -193,9 +196,14 @@ function pluginRegistrationsWithEnv(overrides: Record<string, string>): {
     MORPH_FASTCOMPACT: "true",
     MORPH_ROUTING_HINT: "true",
   };
+  const env = { ...process.env };
+  for (const key of Object.keys(baseline)) {
+    delete env[key];
+  }
+  Object.assign(env, includeBaseline ? baseline : {}, overrides);
   const proc = Bun.spawnSync(["bun", "-e", script], {
     cwd: join(import.meta.dir, ".."),
-    env: { ...process.env, ...baseline, ...overrides },
+    env,
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -216,7 +224,7 @@ function routingGuidanceWithEnv(overrides: Record<string, string>): string {
     "const handlers = {};",
     "const pi = { zod: z, logger: { debug() {}, info() {}, warn() {}, error() {} }, registerTool() {}, on(e, h) { (handlers[e] ??= []).push(h); }, registerCommand() {} };",
     'const mod = await import("./src/index.ts");',
-    "mod.default(pi);",
+    "await mod.default(pi);",
     "const start = (handlers.before_agent_start || [])[0];",
     'let guidance = "";',
     'if (start) { const result = await start({ type: "before_agent_start", prompt: "hi", systemPrompt: [] }, {}); guidance = (result.systemPrompt || []).join("\\n"); }',
@@ -253,7 +261,7 @@ function githubToolDescriptionWithEnv(overrides: Record<string, string>): string
     "const tools = [];",
     "const pi = { zod: z, logger: { debug() {}, info() {}, warn() {}, error() {} }, registerTool(t) { tools.push({ name: t.name, description: t.description }); }, on() {}, registerCommand() {} };",
     'const mod = await import("./src/index.ts");',
-    "mod.default(pi);",
+    "await mod.default(pi);",
     'const tool = tools.find((t) => t.name === "github_warpsearch");',
     'process.stdout.write(JSON.stringify({ description: tool ? tool.description : "" }));',
   ].join("\n");
@@ -285,6 +293,8 @@ function githubToolDescriptionWithEnv(overrides: Record<string, string>): string
 
 beforeEach(() => {
   setMorphApiKey(undefined);
+  process.env.MORPH_WARPGREP = "true";
+  process.env.MORPH_WARPGREP_GITHUB = "true";
   initMorphClients();
 });
 
@@ -805,7 +815,7 @@ describe("extension wiring", () => {
   test("registers tools, routing hook, and compaction hook", async () => {
     const { pi, tools, handlers, commands } = fakePi();
     setMorphApiKey("sk-test");
-    morphPlugin(pi);
+    await morphPlugin(pi);
 
     const registeredNames = tools.map((tool) => tool.name);
     expect([...registeredNames].sort()).toEqual([
@@ -850,9 +860,17 @@ describe("extension wiring", () => {
   });
 
   test("github_warpsearch stops advertising codebase_warpsearch when MORPH_WARPGREP=false", () => {
-    const enabled = githubToolDescriptionWithEnv({ MORPH_API_KEY: "sk-test" });
+    const enabled = githubToolDescriptionWithEnv({
+      MORPH_API_KEY: "sk-test",
+      MORPH_WARPGREP: "true",
+      MORPH_WARPGREP_GITHUB: "true",
+    });
     expect(enabled).toContain("codebase_warpsearch");
-    const disabled = githubToolDescriptionWithEnv({ MORPH_WARPGREP: "false", MORPH_API_KEY: "sk-test" });
+    const disabled = githubToolDescriptionWithEnv({
+      MORPH_WARPGREP: "false",
+      MORPH_WARPGREP_GITHUB: "true",
+      MORPH_API_KEY: "sk-test",
+    });
     expect(disabled).not.toContain("codebase_warpsearch");
   });
 
@@ -1879,8 +1897,8 @@ describe("fastcompact execute", () => {
     };
   }
 
-  test("registers as a read-class tool", () => {
-    const tool = findRegisteredTool("fastcompact");
+  test("registers as a read-class tool", async () => {
+    const tool = await findRegisteredTool("fastcompact");
     expect(tool.approval).toBe("read");
   });
 
@@ -2234,6 +2252,13 @@ describe("fastcompact execute", () => {
 });
 
 describe("feature flag wiring", () => {
+  test("WarpGrep tools are disabled by default", () => {
+    const registered = pluginRegistrationsWithEnv({}, false);
+    expect(registered.tools).not.toContain("codebase_warpsearch");
+    expect(registered.tools).not.toContain("github_warpsearch");
+    expect(registered.tools).toEqual(["fast_edit", "fastcompact"]);
+  });
+
   test("MORPH_EDIT=false removes only fast_edit", () => {
     const registered = pluginRegistrationsWithEnv({ MORPH_EDIT: "false" });
     expect(registered.tools).not.toContain("fast_edit");

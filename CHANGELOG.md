@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-07-06
+
+### Added
+
+- Declared editable OMP plugin settings for all Morph configuration values while preserving the existing `MORPH_*` environment variables as fallbacks.
+
+### Changed
+
+- Disabled local WarpGrep and GitHub WarpGrep tools by default; set `warpgrepEnabled`/`MORPH_WARPGREP` and `warpgrepGithubEnabled`/`MORPH_WARPGREP_GITHUB` to `true` to opt in.
+
 ## [0.3.4] - 2026-07-01
 
 ### Fixed

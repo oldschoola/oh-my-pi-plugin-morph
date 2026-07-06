@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.6] - 2026-07-06
+
+### Added
+
+- Added the `editModel`/`MORPH_EDIT_MODEL` fast_edit model selector with `auto`, `morph-v3-fast`, and `morph-v3-large` support.
+
 ## [0.3.5] - 2026-07-06
 
 ### Added

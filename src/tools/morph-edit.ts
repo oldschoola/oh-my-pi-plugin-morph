@@ -1,4 +1,5 @@
-import type { ApplyEditResult } from "@morphllm/morphsdk";
+import type { ApplyEditInput, ApplyEditResult } from "@morphllm/morphsdk";
+import { countChanges, generateUdiff } from "@morphllm/morphsdk/tools/fastapply";
 import type { Static } from "@oh-my-pi/pi-ai/types";
 import { unlink } from "node:fs/promises";
 import type {
@@ -10,7 +11,7 @@ import type {
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
 import { throwIfAborted, ToolAbortError } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
 import { raceAbort } from "../abort.js";
-import { MORPH_API_KEY, MORPH_API_URL, MORPH_TIMEOUT } from "../config.js";
+import { MORPH_API_KEY, MORPH_API_URL, MORPH_FAST_EDIT_MODEL, MORPH_TIMEOUT, type MorphFastEditModel } from "../config.js";
 import { textToolResult } from "../compaction.js";
 import { nextMorphRetryDelay, transientMorphFailureMessage, waitForMorphRetry } from "../retry.js";
 import {
@@ -81,7 +82,8 @@ export function makeMorphEdit(pi: ExtensionAPI) {
         const normalizedCodeEdit = normalizeCodeEditInput(code_edit);
         const filepath = resolveFilepath(target_filepath, ctx.cwd);
 
-        if (!MORPH_API_KEY || !morph) {
+        const apiKey = MORPH_API_KEY;
+        if (!apiKey || !morph) {
           return textToolResult(`Error: MORPH_API_KEY not configured.
 
 To use fast_edit, set the MORPH_API_KEY environment variable.
@@ -156,7 +158,8 @@ If you truly want to replace the entire file, use the 'write' tool instead.`, tr
           throwIfAborted(signal);
           try {
             result = await raceAbort(
-              client.fastApply.applyEdit(
+              applyMorphFastEdit(
+                client,
                 {
                   originalCode,
                   codeEdit: normalizedCodeEdit,
@@ -164,7 +167,9 @@ If you truly want to replace the entire file, use the 'write' tool instead.`, tr
                   filepath: target_filepath,
                 },
                 {
+                  morphApiKey: apiKey,
                   morphApiUrl: MORPH_API_URL,
+                  model: MORPH_FAST_EDIT_MODEL,
                   generateUdiff: true,
                 },
               ),
@@ -285,4 +290,117 @@ ${udiff.slice(0, 3000)}${udiff.length > 3000 ? "\n... (truncated)" : ""}
       }
     },
   } satisfies ToolDefinition<typeof parameters>;
+}
+
+type FastApplyConfig = {
+  morphApiKey: string;
+  morphApiUrl: string;
+  model: MorphFastEditModel;
+  generateUdiff: boolean;
+};
+
+type MorphApplyResponse = {
+  id?: string;
+  choices?: Array<{ message?: { content?: string | null } }>;
+};
+
+async function applyMorphFastEdit(
+  client: NonNullable<typeof morph>,
+  input: ApplyEditInput,
+  config: FastApplyConfig,
+): Promise<ApplyEditResult> {
+  if (config.model !== "auto") {
+    return client.fastApply.applyEdit(input, {
+      morphApiUrl: config.morphApiUrl,
+      generateUdiff: config.generateUdiff,
+      large: config.model === "morph-v3-large",
+    });
+  }
+
+  return applyMorphFastEditViaApi(input, config);
+}
+
+async function applyMorphFastEditViaApi(
+  input: ApplyEditInput,
+  config: FastApplyConfig,
+): Promise<ApplyEditResult> {
+  const filepath = input.filepath || "file";
+  const instruction = input.instruction ?? input.instructions ?? "";
+
+  try {
+    const { content: mergedCode, completionId } = await callMorphApplyApi(
+      input.originalCode,
+      input.codeEdit,
+      instruction,
+      filepath,
+      config,
+    );
+    return {
+      success: true,
+      mergedCode,
+      udiff: config.generateUdiff
+        ? generateUdiff(input.originalCode, mergedCode, filepath)
+        : undefined,
+      changes: countChanges(input.originalCode, mergedCode),
+      completionId,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      changes: { linesAdded: 0, linesRemoved: 0, linesModified: 0 },
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+async function callMorphApplyApi(
+  originalCode: string,
+  codeEdit: string,
+  instruction: string,
+  filepath: string,
+  config: FastApplyConfig,
+): Promise<{ content: string; completionId?: string }> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), MORPH_TIMEOUT);
+  const message = `<instruction>${instruction}</instruction>
+<code>${originalCode}</code>
+<update>${codeEdit}</update>`;
+
+  try {
+    const response = await fetch(`${config.morphApiUrl}/v1/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${config.morphApiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: config.model,
+        messages: [{ role: "user", content: message }],
+      }),
+      signal: controller.signal,
+    });
+
+    const responseText = await response.text();
+    if (!response.ok) {
+      throw new Error(`Morph API ${response.status} ${response.statusText}: ${responseText}`);
+    }
+
+    let data: MorphApplyResponse;
+    try {
+      data = JSON.parse(responseText) as MorphApplyResponse;
+    } catch {
+      throw new Error("Morph API returned invalid JSON");
+    }
+
+    const content = data.choices?.[0]?.message?.content;
+    if (!content) throw new Error("Morph API returned empty response");
+    return { content, completionId: data.id };
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error(`Morph API request timed out after ${MORPH_TIMEOUT}ms`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 }

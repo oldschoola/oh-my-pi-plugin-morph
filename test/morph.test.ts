@@ -10,7 +10,7 @@ import * as zod from "zod/v4";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { COMPACT_RATIO, EXISTING_CODE_MARKER, FASTCOMPACT_MAX_BYTES, FASTCOMPACT_MAX_LOCATIONS, FASTCOMPACT_MAX_QUERY_BYTES, GITHUB_REPO_SUGGESTION_LIMIT, MORPH_ROUTING_HINT_HEADER, MORPH_WARP_GREP_TIMEOUT, setMorphApiKey } from "../src/config.js";
+import { applyMorphSettings, COMPACT_RATIO, EXISTING_CODE_MARKER, FASTCOMPACT_MAX_BYTES, FASTCOMPACT_MAX_LOCATIONS, FASTCOMPACT_MAX_QUERY_BYTES, GITHUB_REPO_SUGGESTION_LIMIT, MORPH_FAST_EDIT_MODEL, MORPH_ROUTING_HINT_HEADER, MORPH_WARP_GREP_TIMEOUT, setMorphApiKey, setMorphFastEditModel } from "../src/config.js";
 import { compactClient, initMorphClients, morph, warpGrep } from "../src/morph-clients.js";
 import { makeBeforeCompact, serializeAgentMessagesForMorph } from "../src/compaction.js";
 import {
@@ -142,7 +142,11 @@ function toolText(result: AgentToolResult): string {
 }
 
 function setApplyEdit(fn: (...args: unknown[]) => Promise<unknown>): void {
-  (morph as unknown as { fastApply: { applyEdit: (...args: unknown[]) => Promise<unknown> } }).fastApply.applyEdit = fn;
+  process.env.MORPH_EDIT_MODEL = "morph-v3-fast";
+  setMorphFastEditModel("morph-v3-fast");
+  if (!morph) throw new Error("morph client not initialized");
+  const applyEdit = fn as typeof morph.fastApply.applyEdit;
+  morph.fastApply.applyEdit = applyEdit;
 }
 
 function setWarpExecute(fn: (...args: unknown[]) => unknown): void {
@@ -295,7 +299,45 @@ beforeEach(() => {
   setMorphApiKey(undefined);
   process.env.MORPH_WARPGREP = "true";
   process.env.MORPH_WARPGREP_GITHUB = "true";
+  delete process.env.MORPH_EDIT_MODEL;
+  setMorphFastEditModel(undefined);
   initMorphClients();
+});
+
+describe("config", () => {
+  test("normalizes fast_edit model from settings and env", () => {
+    const originalEnv = process.env.MORPH_EDIT_MODEL;
+    try {
+      const supported = ["auto", "morph-v3-fast", "morph-v3-large"] as const;
+      for (const model of supported) {
+        delete process.env.MORPH_EDIT_MODEL;
+        applyMorphSettings({ apiKey: "sk-test", editModel: model });
+        expect(MORPH_FAST_EDIT_MODEL).toBe(model);
+
+        process.env.MORPH_EDIT_MODEL = model;
+        applyMorphSettings({ apiKey: "sk-test" });
+        expect(MORPH_FAST_EDIT_MODEL).toBe(model);
+      }
+
+      for (const value of ["", "invalid-model"]) {
+        delete process.env.MORPH_EDIT_MODEL;
+        applyMorphSettings({ apiKey: "sk-test", editModel: value });
+        expect(MORPH_FAST_EDIT_MODEL).toBe("auto");
+
+        process.env.MORPH_EDIT_MODEL = value;
+        applyMorphSettings({ apiKey: "sk-test" });
+        expect(MORPH_FAST_EDIT_MODEL).toBe("auto");
+      }
+    } finally {
+      if (originalEnv === undefined) {
+        delete process.env.MORPH_EDIT_MODEL;
+      } else {
+        process.env.MORPH_EDIT_MODEL = originalEnv;
+      }
+      applyMorphSettings({});
+      setMorphApiKey(undefined);
+    }
+  });
 });
 
 describe("format helpers", () => {
@@ -954,6 +996,65 @@ describe("fast_edit execute", () => {
       expect(escape.isError).toBe(true);
       expect(toolText(escape)).toContain("Unsafe target_filepath");
     });
+  });
+
+  test("posts auto model requests to Morph Apply and writes the merged output", async () => {
+    setMorphApiKey("sk-test");
+    process.env.MORPH_EDIT_MODEL = "auto";
+    setMorphFastEditModel("auto");
+    initMorphClients();
+    if (!morph) throw new Error("morph client not initialized");
+    const sdkShouldNotRun: typeof morph.fastApply.applyEdit = async () => {
+      throw new Error("auto edit model should use fetch, not the SDK fastApply client");
+    };
+    morph.fastApply.applyEdit = sdkShouldNotRun;
+
+    const original = "export const x = 1;\nexport const y = 1;\n";
+    const codeEdit = `${EXISTING_CODE_MARKER}\nexport const x = 2;\n${EXISTING_CODE_MARKER}`;
+    const merged = "export const x = 2;\nexport const y = 1;\n";
+    const requests: Array<{ url: string; init: RequestInit | undefined }> = [];
+    const fetchStub = async (url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      requests.push({ url: String(url), init });
+      return new Response(JSON.stringify({ choices: [{ message: { content: merged } }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    };
+
+    await withFetch(fetchStub, async () => {
+      await withTempDir(async (dir) => {
+        writeFileSync(join(dir, "auto.ts"), original);
+        const result = await runTool(
+          "fast_edit",
+          {
+            target_filepath: "auto.ts",
+            instructions: "rename x to two",
+            code_edit: codeEdit,
+          },
+          { cwd: dir },
+        );
+
+        expect(result.isError).toBeFalsy();
+        expect(toolText(result)).toContain("Applied edit to auto.ts");
+        expect(readFileSync(join(dir, "auto.ts"), "utf8")).toBe(merged);
+      });
+    });
+
+    expect(requests).toHaveLength(1);
+    const [request] = requests;
+    expect(request.url).toBe("https://api.morphllm.com/v1/chat/completions");
+    expect(request.init?.method).toBe("POST");
+    const bodyText = request.init?.body?.toString();
+    expect(bodyText).toBeTruthy();
+    const body = zod.object({
+      model: zod.string(),
+      messages: zod.array(zod.object({ role: zod.string(), content: zod.string() })),
+    }).parse(JSON.parse(bodyText ?? ""));
+    expect(body.model).toBe("auto");
+    const prompt = body.messages.map((message) => message.content).join("\n");
+    expect(prompt).toContain("<instruction>rename x to two</instruction>");
+    expect(prompt).toContain(`<code>${original}</code>`);
+    expect(prompt).toContain(`<update>${codeEdit}</update>`);
   });
 
   test("writes merged output on a successful Morph apply", async () => {

@@ -48,6 +48,7 @@ variables are still supported as fallbacks for scriptable setups.
 
 ```bash
 omp plugin config list oh-my-pi-plugin-morph
+omp plugin config set oh-my-pi-plugin-morph editModel auto
 omp plugin config set oh-my-pi-plugin-morph warpgrepEnabled true
 omp plugin config set oh-my-pi-plugin-morph warpgrepGithubEnabled true
 ```
@@ -56,6 +57,7 @@ omp plugin config set oh-my-pi-plugin-morph warpgrepGithubEnabled true
 |---|---|---:|---|
 | `apiKey` | `MORPH_API_KEY` | required | Morph API key. Tools stay registered without it, but return setup guidance. |
 | `editEnabled` | `MORPH_EDIT` | `true` | Set `false` to disable `fast_edit`. |
+| `editModel` | `MORPH_EDIT_MODEL` | `auto` | Fast Apply model for `fast_edit`: `auto`, `morph-v3-fast`, or `morph-v3-large`. |
 | `warpgrepEnabled` | `MORPH_WARPGREP` | `false` | Set `true` to enable local WarpGrep. |
 | `warpgrepGithubEnabled` | `MORPH_WARPGREP_GITHUB` | `false` | Set `true` to enable public GitHub search. |
 | `compactEnabled` | `MORPH_COMPACT` | `true` | Set `false` to disable the compaction hook. |

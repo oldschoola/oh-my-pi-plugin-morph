@@ -1,6 +1,6 @@
 {
   "name": "oh-my-pi-plugin-morph",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "description": "oh-my-pi extension for Morph Fast Apply and WarpGrep tools",
   "type": "module",
   "omp": {
@@ -21,6 +21,13 @@
         "description": "Register the Morph fast_edit tool.",
         "env": "MORPH_EDIT",
         "default": true
+      },
+      "editModel": {
+        "type": "string",
+        "label": "Fast edit model",
+        "description": "Morph Apply model for fast_edit: auto, morph-v3-fast, or morph-v3-large.",
+        "env": "MORPH_EDIT_MODEL",
+        "default": "auto"
       },
       "warpgrepEnabled": {
         "type": "boolean",

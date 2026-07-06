@@ -647,6 +647,23 @@ describe("compaction bridge", () => {
     await expect(handler(event, { hasUI: false } as never)).rejects.toThrow();
   });
 
+  test("falls back to native when the compact call exceeds the handler budget", async () => {
+    setMorphApiKey("sk-test");
+    initMorphClients();
+    const client = requireCompactClient();
+    // Hang forever: without a self-imposed deadline the handler would run
+    // until the SDK's 60s timeout, blowing past OMP's 30s handler ceiling.
+    client.compact = () => new Promise<CompactResult>(() => {});
+
+    const { pi } = fakePi();
+    const event = compactEvent([textMsg("user", "hi")]);
+    const handler = makeBeforeCompact(pi, 50); // 50ms budget, not 28s
+    const start = Date.now();
+    const result = await handler(event, { hasUI: false } as never);
+    expect(result).toBeUndefined(); // graceful native fallback, not a throw
+    expect(Date.now() - start).toBeLessThan(2_000); // bounded by the budget, not 60s
+  });
+
   test("snapcompact strategy yields to native compaction", async () => {
     setMorphApiKey("sk-test");
     initMorphClients();

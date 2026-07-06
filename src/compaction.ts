@@ -170,7 +170,7 @@ export function textToolResult(text: string, isError = false): AgentToolResult {
   return { content: [{ type: "text", text }], isError: isError || undefined };
 }
 
-export function makeBeforeCompact(pi: ExtensionAPI) {
+export function makeBeforeCompact(pi: ExtensionAPI, handlerBudgetMs = 28_000) {
   return async function beforeCompact(
     event: SessionBeforeCompactEvent,
     ctx: ExtensionContext,
@@ -211,6 +211,13 @@ export function makeBeforeCompact(pi: ExtensionAPI) {
     if (input.length === 0) return undefined;
 
     throwIfAborted(event.signal);
+    // OMP caps session_before_compact handlers at 30s
+    // (EXTENSION_HANDLER_TIMEOUT_MS). Self-abort just under it so a slow Morph
+    // call falls back to native here, instead of OMP reporting "handler timed
+    // out" and orphaning the in-flight request.
+    const compactSignal = event.signal
+      ? AbortSignal.any([event.signal, AbortSignal.timeout(handlerBudgetMs)])
+      : AbortSignal.timeout(handlerBudgetMs);
     const startTime = Date.now();
     try {
       let attemptIndex = 0;
@@ -225,7 +232,7 @@ export function makeBeforeCompact(pi: ExtensionAPI) {
               preserveRecent: 0,
               query: focus,
             }),
-            event.signal,
+            compactSignal,
           );
         } catch (error) {
           const transientMessage = transientMorphFailureMessage(error);
@@ -235,7 +242,7 @@ export function makeBeforeCompact(pi: ExtensionAPI) {
           pi.logger.warn(
             `Morph compaction transient overload on attempt ${attemptIndex + 1}; retrying in ${delayMs}ms: ${transientMessage}`,
           );
-          await waitForMorphRetry(delayMs, event.signal);
+          await waitForMorphRetry(delayMs, compactSignal);
           attemptIndex++;
           continue;
         }

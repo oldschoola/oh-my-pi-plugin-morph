@@ -7,7 +7,7 @@ import type {
   SessionBeforeCompactResult,
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
 import { throwIfAborted } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
-import { COMPACT_RATIO, MORPH_COMPACT_TIMEOUT } from "./config.js";
+import { COMPACT_RATIO, MORPH_HANDLER_BUDGET_MS } from "./config.js";
 import { compactClient, morphReady } from "./morph-clients.js";
 import { raceAbort } from "./abort.js";
 import { nextMorphRetryDelay, transientMorphFailureMessage, waitForMorphRetry } from "./retry.js";
@@ -170,7 +170,7 @@ export function textToolResult(text: string, isError = false): AgentToolResult {
   return { content: [{ type: "text", text }], isError: isError || undefined };
 }
 
-export function makeBeforeCompact(pi: ExtensionAPI, handlerBudgetMs = 28_000) {
+export function makeBeforeCompact(pi: ExtensionAPI, handlerBudgetMs = MORPH_HANDLER_BUDGET_MS) {
   return async function beforeCompact(
     event: SessionBeforeCompactEvent,
     ctx: ExtensionContext,
@@ -237,7 +237,7 @@ export function makeBeforeCompact(pi: ExtensionAPI, handlerBudgetMs = 28_000) {
         } catch (error) {
           const transientMessage = transientMorphFailureMessage(error);
           if (transientMessage === undefined) throw error;
-          const delayMs = nextMorphRetryDelay(attemptIndex, startTime, MORPH_COMPACT_TIMEOUT);
+          const delayMs = nextMorphRetryDelay(attemptIndex, startTime, handlerBudgetMs);
           if (delayMs === undefined) throw error;
           pi.logger.warn(
             `Morph compaction transient overload on attempt ${attemptIndex + 1}; retrying in ${delayMs}ms: ${transientMessage}`,

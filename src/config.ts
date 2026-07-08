@@ -10,6 +10,14 @@ export const MORPH_API_URL = "https://api.morphllm.com";
 export const MORPH_TIMEOUT = 30_000;
 export const MORPH_WARP_GREP_TIMEOUT = 60_000;
 export const MORPH_COMPACT_TIMEOUT = 60_000;
+// OMP caps session_before_compact extension handlers at 30s
+// (EXTENSION_HANDLER_TIMEOUT_MS). Self-abort just under that ceiling so a
+// slow Morph compact call falls back to native compaction here instead of
+// being killed by the host and orphaning the in-flight HTTP request.
+// Separate from MORPH_COMPACT_TIMEOUT (the SDK client / fastcompact budget)
+// because fastcompact is a tool, not a session_before_compact handler, and
+// legitimately needs the full 60s.
+export const MORPH_HANDLER_BUDGET_MS = 28_000;
 export const GITHUB_RESOLVER_TIMEOUT = 10_000;
 export const GITHUB_REPO_API_URL = "https://api.github.com/repos";
 export const GITHUB_REPO_SEARCH_URL = "https://api.github.com/search/repositories";
